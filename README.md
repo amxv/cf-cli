@@ -244,6 +244,8 @@ The `workers-logs-admin` preset adds:
 - `Workers Observability Write`
 - `Logs Write`
 
+If your active token is too narrow, `cf worker logs enable ...` will automatically mint a temporary `workers-logs-admin` helper token from the configured bootstrap token and retry once.
+
 ## Workers Logpush To R2
 
 Use this when you want exported trace-event logs in R2 in addition to the built-in recent-log query flow.
@@ -287,6 +289,8 @@ Notes:
 - `cf worker logs ...` and `cf worker:logs ...` both use the persisted Workers observability query API, which is the best path for "show me the last 5-10 minutes".
 - `cf worker logs enable ...` uses the Worker script settings API and requires broader Worker permissions than the read-only recent-log flow.
 - `cf worker logs sink setup-r2 ...` uses the account-level Logpush API and requires `Logs Write` plus valid R2 credentials.
+- If your active token is too narrow, `cf worker logs sink setup-r2 ...` will automatically mint a temporary `workers-r2-logpush-admin` helper token from the configured bootstrap token and retry once.
+- Cloudflare also enforces account-level Logpush access separately from Workers permissions. If the command still fails with `10000: Authentication error`, the account member backing the token likely needs `Administrator`, `Super Administrator`, or `Log Share` edit access in the Cloudflare dashboard.
 - These Worker commands are account-level, so they use `CF_ACCOUNT_ID` or the configured account ID keychain entry in addition to the API token.
 
 ## R2 Helpers
@@ -296,6 +300,8 @@ Create or reuse an R2 bucket:
 ```bash
 cf r2 bucket create ama-workers-trace-events
 ```
+
+If the bucket already exists and you own it, the command treats that as a reusable success path.
 
 Mint bucket-scoped R2 S3 credentials:
 

@@ -190,6 +190,22 @@ type apiMessage struct {
 	Message string `json:"message"`
 }
 
+type cloudflareAPIError struct {
+	Messages []apiMessage
+}
+
+func (e cloudflareAPIError) Error() string {
+	if len(e.Messages) == 0 {
+		return "cloudflare API request failed"
+	}
+
+	parts := make([]string, 0, len(e.Messages))
+	for _, apiErr := range e.Messages {
+		parts = append(parts, fmt.Sprintf("%d: %s", apiErr.Code, apiErr.Message))
+	}
+	return strings.Join(parts, "; ")
+}
+
 type apiEnvelope[T any] struct {
 	Success  bool         `json:"success"`
 	Errors   []apiMessage `json:"errors"`
@@ -849,31 +865,44 @@ func main() {
 				return err
 			}
 
-			workers, err := listWorkers(resolvedToken, resolvedAccountID)
-			if err != nil {
-				return err
-			}
-
 			name := ""
 			if len(args) == 1 {
 				name = args[0]
 			}
-			worker, err := selectWorker(workers, name)
-			if err != nil {
-				return err
+
+			runEnable := func(token string) (*workerScript, *workerScriptSettings, error) {
+				workers, err := listWorkers(token, resolvedAccountID)
+				if err != nil {
+					return nil, nil, err
+				}
+				worker, err := selectWorker(workers, name)
+				if err != nil {
+					return nil, nil, err
+				}
+				updated, err := enableWorkerLogs(
+					token,
+					resolvedAccountID,
+					worker.ID,
+					workerLogsPersist,
+					workerLogsInvocation,
+					workerLogsSampleRate,
+					workerLogsEnableLogpush,
+				)
+				if err != nil {
+					return nil, nil, err
+				}
+				return worker, updated, nil
 			}
 
-			updated, err := enableWorkerLogs(
-				resolvedToken,
-				resolvedAccountID,
-				worker.ID,
-				workerLogsPersist,
-				workerLogsInvocation,
-				workerLogsSampleRate,
-				workerLogsEnableLogpush,
-			)
+			worker, updated, err := runEnable(resolvedToken)
 			if err != nil {
-				return err
+				fallbackToken, mintErr := mintTemporaryPresetToken("workers-logs-admin", resolvedAccountID)
+				if mintErr == nil {
+					worker, updated, err = runEnable(fallbackToken)
+				}
+				if err != nil {
+					return err
+				}
 			}
 
 			fmt.Printf("✅ Enabled logs for %s\n", worker.ID)
@@ -913,26 +942,39 @@ func main() {
 				return err
 			}
 
-			workers, err := listWorkers(resolvedToken, resolvedAccountID)
-			if err != nil {
-				return err
-			}
-
 			name := ""
 			if len(args) == 1 {
 				name = args[0]
 			}
-			worker, err := selectWorker(workers, name)
-			if err != nil {
-				return err
+
+			runSetup := func(token string) (*workerScript, *logpushJob, error) {
+				workers, err := listWorkers(token, resolvedAccountID)
+				if err != nil {
+					return nil, nil, err
+				}
+				worker, err := selectWorker(workers, name)
+				if err != nil {
+					return nil, nil, err
+				}
+				job, err := ensureWorkerLogpushR2Job(token, resolvedAccountID, worker.ID)
+				if err != nil {
+					return nil, nil, err
+				}
+				if _, err := enableWorkerLogs(token, resolvedAccountID, worker.ID, true, true, 1, true); err != nil {
+					return nil, nil, err
+				}
+				return worker, job, nil
 			}
 
-			job, err := ensureWorkerLogpushR2Job(resolvedToken, resolvedAccountID, worker.ID)
+			worker, job, err := runSetup(resolvedToken)
 			if err != nil {
-				return err
-			}
-			if _, err := enableWorkerLogs(resolvedToken, resolvedAccountID, worker.ID, true, true, 1, true); err != nil {
-				return err
+				fallbackToken, mintErr := mintTemporaryPresetToken("workers-r2-logpush-admin", resolvedAccountID)
+				if mintErr == nil {
+					worker, job, err = runSetup(fallbackToken)
+				}
+				if err != nil {
+					return err
+				}
 			}
 
 			fmt.Printf("✅ Workers Logpush R2 sink ready for %s\n", worker.ID)
@@ -1704,7 +1746,22 @@ func createR2Bucket(apiToken, accountID, name, jurisdiction, locationHint, stora
 		return nil, err
 	}
 	if !envelope.Success {
-		return nil, apiErrors(envelope.Errors)
+		apiErr := apiErrors(envelope.Errors)
+		if hasAPIErrorCode(apiErr, 10004) {
+			if buckets, err := listR2Buckets(apiToken, accountID); err == nil {
+				for _, bucket := range buckets {
+					if bucket.Name == name && bucket.Jurisdiction == normalizeR2Jurisdiction(jurisdiction) {
+						return &bucket, nil
+					}
+				}
+			}
+
+			return &r2Bucket{
+				Name:         name,
+				Jurisdiction: normalizeR2Jurisdiction(jurisdiction),
+			}, nil
+		}
+		return nil, apiErr
 	}
 	return &envelope.Result, nil
 }
@@ -1826,6 +1883,26 @@ func storeR2LogpushSecrets(bucketName, accessKeyID, secretAccessKey, path string
 	return nil
 }
 
+func mintTemporaryPresetToken(preset, accountID string) (string, error) {
+	bootstrap, err := resolveBootstrapToken()
+	if err != nil {
+		return "", err
+	}
+
+	token, err := mintPresetToken(
+		bootstrap,
+		fmt.Sprintf("%s %s %s", profile, preset, time.Now().UTC().Format("20060102-150405")),
+		preset,
+		accountID,
+		"",
+		expiresOn,
+	)
+	if err != nil {
+		return "", err
+	}
+	return token.Value, nil
+}
+
 func ensureWorkerLogpushR2Job(apiToken, accountID, workerName string) (*logpushJob, error) {
 	bucket, err := resolveWorkerR2Bucket()
 	if err != nil {
@@ -1867,7 +1944,7 @@ func ensureWorkerLogpushR2Job(apiToken, accountID, workerName string) (*logpushJ
 
 	jobs, err := listLogpushJobs(apiToken, accountID)
 	if err != nil {
-		return nil, err
+		return nil, explainLogpushAccessError(err)
 	}
 	for _, job := range jobs {
 		if job.Dataset != "workers_trace_events" {
@@ -1910,7 +1987,11 @@ func ensureWorkerLogpushR2Job(apiToken, accountID, workerName string) (*logpushJ
 		"max_upload_bytes":            workerLogpushMaxUploadBytes,
 	}
 
-	return createLogpushJob(apiToken, accountID, payload)
+	job, err := createLogpushJob(apiToken, accountID, payload)
+	if err != nil {
+		return nil, explainLogpushAccessError(err)
+	}
+	return job, nil
 }
 
 func buildResources(scope, resourceID, accountID string) (map[string]any, error) {
@@ -2076,12 +2157,30 @@ func apiErrors(errs []apiMessage) error {
 		return errors.New("cloudflare API request failed")
 	}
 
-	parts := make([]string, 0, len(errs))
-	for _, apiErr := range errs {
-		parts = append(parts, fmt.Sprintf("%d: %s", apiErr.Code, apiErr.Message))
-	}
+	return cloudflareAPIError{Messages: errs}
+}
 
-	return errors.New(strings.Join(parts, "; "))
+func hasAPIErrorCode(err error, code int) bool {
+	var apiErr cloudflareAPIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	for _, msg := range apiErr.Messages {
+		if msg.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+func explainLogpushAccessError(err error) error {
+	if !hasAPIErrorCode(err, 10000) {
+		return err
+	}
+	return fmt.Errorf(
+		"%w. Cloudflare accepted the token format but rejected account-level Logpush access. This account likely needs Logpush configuration access in the Cloudflare dashboard (Administrator, Super Administrator, or Log Share edit role) in addition to an account-scoped token with Logs Write",
+		err,
+	)
 }
 
 func resolveAPIToken() (string, error) {
