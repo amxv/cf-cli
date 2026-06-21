@@ -33,12 +33,17 @@ var expiresOn string
 var proxied bool
 var ttl int16 = 3600
 var upsert bool
+var recordValue string
+var deleteAll bool
 
 type dnsRecord struct {
 	ID      string `json:"id"`
 	Type    string `json:"type"`
 	Name    string `json:"name"`
 	Content string `json:"content"`
+	TTL     int    `json:"ttl"`
+	Proxied bool   `json:"proxied"`
+	Comment string `json:"comment"`
 }
 
 type zone struct {
@@ -148,10 +153,10 @@ func main() {
 	setCmd.Flags().BoolVar(&upsert, "upsert", true, "Create the DNS record if it does not exist")
 	setCmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
 
-	aCmd := &cobra.Command{
-		Use:   "a [key] [ipv4] [comment (optional)]",
-		Short: "Shortcut for setting an A record on the default domain",
-		Args:  cobra.MinimumNArgs(2),
+	listCmd := &cobra.Command{
+		Use:   "list [type] [key]",
+		Short: "List DNS records for a domain or the current profile domain",
+		Args:  cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolvedDomain, err := resolveDomain()
 			if err != nil {
@@ -162,19 +167,83 @@ func main() {
 				return err
 			}
 
-			comment := ""
-			if len(args) > 2 {
-				comment = args[2]
+			recordType := ""
+			key := ""
+			if len(args) > 0 {
+				recordType = args[0]
+			}
+			if len(args) > 1 {
+				key = args[1]
 			}
 
-			return updateDNSRecord(resolvedToken, resolvedDomain, "A", args[0], args[1], comment)
+			records, err := listDNSRecords(resolvedToken, resolvedDomain, recordType, key)
+			if err != nil {
+				return err
+			}
+			printDNSRecords(records)
+			return nil
 		},
 	}
-	aCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
-	aCmd.Flags().BoolVar(&proxied, "proxied", true, "Whether to enable Cloudflare proxying")
-	aCmd.Flags().Int16Var(&ttl, "ttl", 3600, "Time to live for the DNS record in seconds")
-	aCmd.Flags().BoolVar(&upsert, "upsert", true, "Create the DNS record if it does not exist")
-	aCmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
+	listCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
+	listCmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
+
+	getCmd := &cobra.Command{
+		Use:   "get [type] [key]",
+		Short: "Get one or more exact-match DNS records for the current profile domain",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedDomain, err := resolveDomain()
+			if err != nil {
+				return err
+			}
+			resolvedToken, err := resolveAPIToken()
+			if err != nil {
+				return err
+			}
+
+			records, err := listDNSRecords(resolvedToken, resolvedDomain, args[0], args[1])
+			if err != nil {
+				return err
+			}
+			printDNSRecords(records)
+			return nil
+		},
+	}
+	getCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
+	getCmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
+
+	deleteCmd := &cobra.Command{
+		Use:   "delete [type] [key]",
+		Short: "Delete DNS records from the current profile domain",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedDomain, err := resolveDomain()
+			if err != nil {
+				return err
+			}
+			resolvedToken, err := resolveAPIToken()
+			if err != nil {
+				return err
+			}
+
+			deleted, err := deleteDNSRecords(resolvedToken, resolvedDomain, args[0], args[1], recordValue, deleteAll)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✅ Deleted %d record(s)\n", deleted)
+			return nil
+		},
+	}
+	deleteCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
+	deleteCmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
+	deleteCmd.Flags().StringVar(&recordValue, "value", "", "Only delete records matching this exact content value")
+	deleteCmd.Flags().BoolVar(&deleteAll, "all", false, "Delete all matching records instead of only the first one")
+
+	aCmd := makeRecordShortcutCommand("a", "A", "ipv4", "Shortcut for setting an A record on the default domain")
+	aaaaCmd := makeRecordShortcutCommand("aaaa", "AAAA", "ipv6", "Shortcut for setting an AAAA record on the default domain")
+	cnameCmd := makeRecordShortcutCommand("cname", "CNAME", "target", "Shortcut for setting a CNAME record on the default domain")
+	txtCmd := makeRecordShortcutCommand("txt", "TXT", "text", "Shortcut for setting a TXT record on the default domain")
+	mxCmd := makeRecordShortcutCommand("mx", "MX", "mail-server", "Shortcut for setting an MX record on the default domain")
 
 	doctorCmd := &cobra.Command{
 		Use:   "doctor",
@@ -240,7 +309,14 @@ func main() {
 
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(setCmd)
+	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(getCmd)
+	rootCmd.AddCommand(deleteCmd)
 	rootCmd.AddCommand(aCmd)
+	rootCmd.AddCommand(aaaaCmd)
+	rootCmd.AddCommand(cnameCmd)
+	rootCmd.AddCommand(txtCmd)
+	rootCmd.AddCommand(mxCmd)
 	rootCmd.AddCommand(mintCmd)
 	rootCmd.AddCommand(doctorCmd)
 
@@ -252,13 +328,9 @@ func main() {
 
 func updateDNSRecord(apiToken, domain, recordType, key, value, comment string) error {
 	client := &http.Client{}
-
-	zoneResp, err := getJSON[[]zone](client, fmt.Sprintf("https://api.cloudflare.com/client/v4/zones?name=%s", url.QueryEscape(domain)), apiToken)
+	zoneID, err := fetchZoneID(client, apiToken, domain)
 	if err != nil {
 		return err
-	}
-	if len(zoneResp.Result) == 0 {
-		return fmt.Errorf("zone not found for %s", domain)
 	}
 
 	recordName := normalizeRecordName(domain, key)
@@ -269,7 +341,7 @@ func updateDNSRecord(apiToken, domain, recordType, key, value, comment string) e
 
 	recordResp, err := getJSON[[]dnsRecord](client, fmt.Sprintf(
 		"https://api.cloudflare.com/client/v4/zones/%s/dns_records?type=%s&name=%s",
-		zoneResp.Result[0].ID,
+		zoneID,
 		url.QueryEscape(strings.ToUpper(recordType)),
 		url.QueryEscape(recordName),
 	), apiToken)
@@ -281,17 +353,102 @@ func updateDNSRecord(apiToken, domain, recordType, key, value, comment string) e
 		if !upsert {
 			return fmt.Errorf("the %s record was not found for %s", strings.ToUpper(recordType), recordName)
 		}
-		if err := insertRecord(apiToken, recordType, recordName, value, comment, zoneResp.Result[0].ID, client); err != nil {
+		if err := insertRecord(apiToken, recordType, recordName, value, comment, zoneID, client); err != nil {
 			return err
 		}
 	} else {
-		if err := updateRecord(apiToken, recordType, recordName, value, comment, zoneResp.Result[0].ID, recordResp.Result[0].ID, client); err != nil {
+		if err := updateRecord(apiToken, recordType, recordName, value, comment, zoneID, recordResp.Result[0].ID, client); err != nil {
 			return err
 		}
 	}
 
 	fmt.Printf("✅ %s %s -> %s\n", strings.ToUpper(recordType), recordDisplayName, value)
 	return nil
+}
+
+func listDNSRecords(apiToken, domain, recordType, key string) ([]dnsRecord, error) {
+	client := &http.Client{}
+	zoneID, err := fetchZoneID(client, apiToken, domain)
+	if err != nil {
+		return nil, err
+	}
+
+	query := url.Values{}
+	query.Set("per_page", "100")
+	if recordType != "" {
+		query.Set("type", strings.ToUpper(recordType))
+	}
+
+	resp, err := getJSON[[]dnsRecord](client, fmt.Sprintf(
+		"https://api.cloudflare.com/client/v4/zones/%s/dns_records?%s",
+		zoneID,
+		query.Encode(),
+	), apiToken)
+	if err != nil {
+		return nil, err
+	}
+
+	if key == "" {
+		return resp.Result, nil
+	}
+
+	expectedName := normalizeRecordName(domain, key)
+	filtered := make([]dnsRecord, 0, len(resp.Result))
+	for _, record := range resp.Result {
+		if strings.EqualFold(record.Name, expectedName) {
+			filtered = append(filtered, record)
+		}
+	}
+
+	return filtered, nil
+}
+
+func deleteDNSRecords(apiToken, domain, recordType, key, content string, all bool) (int, error) {
+	client := &http.Client{}
+	zoneID, err := fetchZoneID(client, apiToken, domain)
+	if err != nil {
+		return 0, err
+	}
+
+	records, err := listDNSRecords(apiToken, domain, recordType, key)
+	if err != nil {
+		return 0, err
+	}
+	if len(records) == 0 {
+		return 0, fmt.Errorf("no %s record found for %s", strings.ToUpper(recordType), normalizeRecordName(domain, key))
+	}
+
+	filtered := make([]dnsRecord, 0, len(records))
+	for _, record := range records {
+		if content == "" || record.Content == content {
+			filtered = append(filtered, record)
+		}
+	}
+	if len(filtered) == 0 {
+		return 0, fmt.Errorf("no matching records found for %s with value %q", normalizeRecordName(domain, key), content)
+	}
+	if !all {
+		filtered = filtered[:1]
+	}
+
+	for _, record := range filtered {
+		req, err := newJSONRequest("DELETE", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneID, record.ID), apiToken, nil)
+		if err != nil {
+			return 0, err
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, err
+		}
+		if err := checkAPIResponse(resp); err != nil {
+			resp.Body.Close()
+			return 0, err
+		}
+		resp.Body.Close()
+	}
+
+	return len(filtered), nil
 }
 
 func mintDNSToken(bootstrap, resolvedZoneID, tokenName, tokenExpiry string) (*tokenCreateResult, error) {
@@ -411,6 +568,17 @@ func newJSONRequest(method, requestURL, token string, payload any) (*http.Reques
 	req.Header.Add("Authorization", "Bearer "+token)
 	req.Header.Add("Content-Type", "application/json")
 	return req, nil
+}
+
+func fetchZoneID(client *http.Client, apiToken, domain string) (string, error) {
+	zoneResp, err := getJSON[[]zone](client, fmt.Sprintf("https://api.cloudflare.com/client/v4/zones?name=%s", url.QueryEscape(domain)), apiToken)
+	if err != nil {
+		return "", err
+	}
+	if len(zoneResp.Result) == 0 {
+		return "", fmt.Errorf("zone not found for %s", domain)
+	}
+	return zoneResp.Result[0].ID, nil
 }
 
 func getJSON[T any](client *http.Client, requestURL, apiToken string) (*apiEnvelope[T], error) {
@@ -676,4 +844,58 @@ func reportSecretResolution(label string, resolver func() (string, error)) {
 		redacted = value[:8] + "..." + value[len(value)-4:]
 	}
 	fmt.Printf("✅ %s: %s\n", label, redacted)
+}
+
+func printDNSRecords(records []dnsRecord) {
+	if len(records) == 0 {
+		fmt.Println("No records found.")
+		return
+	}
+
+	for _, record := range records {
+		comment := record.Comment
+		if comment == "" {
+			comment = "-"
+		}
+		fmt.Printf("%s\t%s\t%s\tttl=%d\tproxied=%t\tcomment=%s\n",
+			record.Type,
+			record.Name,
+			record.Content,
+			record.TTL,
+			record.Proxied,
+			comment,
+		)
+	}
+}
+
+func makeRecordShortcutCommand(name, recordType, valueLabel, short string) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   fmt.Sprintf("%s [key] [%s] [comment (optional)]", name, valueLabel),
+		Short: short,
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedDomain, err := resolveDomain()
+			if err != nil {
+				return err
+			}
+			resolvedToken, err := resolveAPIToken()
+			if err != nil {
+				return err
+			}
+
+			comment := ""
+			if len(args) > 2 {
+				comment = args[2]
+			}
+
+			return updateDNSRecord(resolvedToken, resolvedDomain, recordType, args[0], args[1], comment)
+		},
+	}
+
+	cmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
+	cmd.Flags().BoolVar(&proxied, "proxied", true, "Whether to enable Cloudflare proxying")
+	cmd.Flags().Int16Var(&ttl, "ttl", 3600, "Time to live for the DNS record in seconds")
+	cmd.Flags().BoolVar(&upsert, "upsert", true, "Create the DNS record if it does not exist")
+	cmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
+	return cmd
 }
