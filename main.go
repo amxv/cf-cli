@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -62,6 +63,11 @@ var workerLogpushSampleRate float64
 var workerLogpushMaxUploadInterval int
 var workerLogpushMaxUploadRecords int
 var workerLogpushMaxUploadBytes int
+var r2Jurisdiction string
+var r2LocationHint string
+var r2StorageClass string
+var activateR2ControlToken bool
+var r2StoreLogpushSecrets bool
 
 type dnsRecord struct {
 	ID      string `json:"id"`
@@ -169,6 +175,14 @@ type logpushJob struct {
 	MaxUploadIntervalSeconds int                  `json:"max_upload_interval_seconds"`
 	MaxUploadRecords         int                  `json:"max_upload_records"`
 	OutputOptions            logpushOutputOptions `json:"output_options"`
+}
+
+type r2Bucket struct {
+	Name         string `json:"name"`
+	Jurisdiction string `json:"jurisdiction"`
+	Location     string `json:"location"`
+	StorageClass string `json:"storage_class"`
+	CreationDate string `json:"creation_date"`
 }
 
 type apiMessage struct {
@@ -543,6 +557,186 @@ func main() {
 	}
 	permsCmd.Flags().StringVar(&bootstrapToken, "bootstrap-token", "", "Cloudflare bootstrap token")
 
+	r2Cmd := &cobra.Command{
+		Use:   "r2",
+		Short: "Cloudflare R2 utilities",
+	}
+
+	r2BucketCmd := &cobra.Command{
+		Use:   "bucket",
+		Short: "Manage R2 buckets",
+	}
+
+	r2BucketCreateCmd := &cobra.Command{
+		Use:   "create [name]",
+		Short: "Create an R2 bucket for the current account",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedToken, err := resolveAPIToken()
+			if err != nil {
+				return err
+			}
+			resolvedAccountID, err := resolveAccountID()
+			if err != nil {
+				return err
+			}
+
+			bucket, created, err := ensureR2Bucket(resolvedToken, resolvedAccountID, args[0], r2Jurisdiction, r2LocationHint, r2StorageClass)
+			if err != nil {
+				return err
+			}
+			if created {
+				fmt.Printf("✅ Created R2 bucket %s\n", bucket.Name)
+			} else {
+				fmt.Printf("✅ Reusing existing R2 bucket %s\n", bucket.Name)
+			}
+			fmt.Printf("jurisdiction=%s location=%s storage_class=%s\n", emptyDash(bucket.Jurisdiction), emptyDash(bucket.Location), emptyDash(bucket.StorageClass))
+			return nil
+		},
+	}
+	r2BucketCreateCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
+	r2BucketCreateCmd.Flags().StringVar(&accountID, "account-id", "", "Cloudflare account ID")
+	r2BucketCreateCmd.Flags().StringVar(&r2Jurisdiction, "jurisdiction", "default", "R2 jurisdiction: default, eu, or fedramp")
+	r2BucketCreateCmd.Flags().StringVar(&r2LocationHint, "location", "", "Optional bucket location hint: apac, eeur, enam, weur, wnam, or oc")
+	r2BucketCreateCmd.Flags().StringVar(&r2StorageClass, "storage-class", "Standard", "Default storage class: Standard or InfrequentAccess")
+
+	r2CredsCmd := &cobra.Command{
+		Use:   "creds",
+		Short: "Mint R2 S3-compatible credentials",
+	}
+
+	r2CredsMintCmd := &cobra.Command{
+		Use:   "mint [bucket]",
+		Short: "Mint bucket-scoped R2 S3 credentials via the Cloudflare token API",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			bucketName := strings.TrimSpace(args[0])
+			if bucketName == "" {
+				return errors.New("bucket name is required")
+			}
+			bootstrap, err := resolveBootstrapToken()
+			if err != nil {
+				return err
+			}
+			resolvedAccountID, err := resolveAccountID()
+			if err != nil {
+				return err
+			}
+
+			token, accessKeyID, secretAccessKey, endpoint, err := mintR2BucketCredentials(
+				bootstrap,
+				resolvedAccountID,
+				bucketName,
+				r2Jurisdiction,
+				fmt.Sprintf("%s r2 %s %s", profile, bucketName, time.Now().UTC().Format("20060102-150405")),
+				expiresOn,
+			)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("✅ Minted R2 bucket token %q (%s)\n", token.Name, token.ID)
+			fmt.Printf("bucket=%s jurisdiction=%s endpoint=%s\n", bucketName, normalizeR2Jurisdiction(r2Jurisdiction), endpoint)
+			fmt.Printf("access_key_id=%s\n", accessKeyID)
+			fmt.Printf("secret_access_key=%s\n", secretAccessKey)
+
+			if r2StoreLogpushSecrets {
+				if err := storeR2LogpushSecrets(bucketName, accessKeyID, secretAccessKey, "workers-trace-events"); err != nil {
+					return err
+				}
+				fmt.Printf("✅ Stored logpush R2 credentials in keychain for profile %q\n", profile)
+			}
+			return nil
+		},
+	}
+	r2CredsMintCmd.Flags().StringVar(&bootstrapToken, "bootstrap-token", "", "Cloudflare bootstrap token")
+	r2CredsMintCmd.Flags().StringVar(&accountID, "account-id", "", "Cloudflare account ID")
+	r2CredsMintCmd.Flags().StringVar(&r2Jurisdiction, "jurisdiction", "default", "R2 jurisdiction: default, eu, or fedramp")
+	r2CredsMintCmd.Flags().StringVar(&expiresOn, "expires-on", "", "Optional RFC3339 expiry time for the minted token")
+	r2CredsMintCmd.Flags().BoolVar(&r2StoreLogpushSecrets, "store-logpush", true, "Store the resulting bucket, access key, secret key, and default path in the macOS keychain for Worker Logpush")
+
+	r2LogpushCmd := &cobra.Command{
+		Use:   "logpush",
+		Short: "Bootstrap R2 for Worker Logpush",
+	}
+
+	r2LogpushBootstrapCmd := &cobra.Command{
+		Use:   "bootstrap [worker] [bucket(optional)]",
+		Short: "Create an R2 bucket, mint R2 credentials, store them, and configure Worker Logpush",
+		Args:  cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			workerName := strings.TrimSpace(args[0])
+			bucketName := fmt.Sprintf("%s-workers-trace-events", profile)
+			if len(args) == 2 && strings.TrimSpace(args[1]) != "" {
+				bucketName = strings.TrimSpace(args[1])
+			}
+
+			bootstrap, err := resolveBootstrapToken()
+			if err != nil {
+				return err
+			}
+			resolvedAccountID, err := resolveAccountID()
+			if err != nil {
+				return err
+			}
+
+			controlToken, err := mintPresetToken(
+				bootstrap,
+				fmt.Sprintf("%s logpush control %s", profile, time.Now().UTC().Format("20060102-150405")),
+				"workers-r2-logpush-admin",
+				resolvedAccountID,
+				"",
+				expiresOn,
+			)
+			if err != nil {
+				return err
+			}
+
+			if _, _, err := ensureR2Bucket(controlToken.Value, resolvedAccountID, bucketName, r2Jurisdiction, r2LocationHint, r2StorageClass); err != nil {
+				return err
+			}
+			_, accessKeyID, secretAccessKey, _, err := mintR2BucketCredentials(
+				bootstrap,
+				resolvedAccountID,
+				bucketName,
+				r2Jurisdiction,
+				fmt.Sprintf("%s r2 logpush %s %s", profile, bucketName, time.Now().UTC().Format("20060102-150405")),
+				expiresOn,
+			)
+			if err != nil {
+				return err
+			}
+			if err := storeR2LogpushSecrets(bucketName, accessKeyID, secretAccessKey, "workers-trace-events"); err != nil {
+				return err
+			}
+
+			job, err := ensureWorkerLogpushR2Job(controlToken.Value, resolvedAccountID, workerName)
+			if err != nil {
+				return err
+			}
+			if _, err := enableWorkerLogs(controlToken.Value, resolvedAccountID, workerName, true, true, 1, true); err != nil {
+				return err
+			}
+			if activateR2ControlToken {
+				if err := writeSecretToKeychain(defaultAPIServiceName(), controlToken.Value); err != nil {
+					return fmt.Errorf("bootstrapped R2 logpush, but failed to activate the control token: %w", err)
+				}
+				fmt.Printf("✅ Activated logpush control token in keychain service %q\n", defaultAPIServiceName())
+			}
+
+			fmt.Printf("✅ Bootstrapped R2 Logpush for %s using bucket %s\n", workerName, bucketName)
+			fmt.Printf("job_id=%d destination=%s\n", job.ID, redactDestinationConf(job.DestinationConf))
+			return nil
+		},
+	}
+	r2LogpushBootstrapCmd.Flags().StringVar(&bootstrapToken, "bootstrap-token", "", "Cloudflare bootstrap token")
+	r2LogpushBootstrapCmd.Flags().StringVar(&accountID, "account-id", "", "Cloudflare account ID")
+	r2LogpushBootstrapCmd.Flags().StringVar(&r2Jurisdiction, "jurisdiction", "default", "R2 jurisdiction: default, eu, or fedramp")
+	r2LogpushBootstrapCmd.Flags().StringVar(&r2LocationHint, "location", "", "Optional bucket location hint: apac, eeur, enam, weur, wnam, or oc")
+	r2LogpushBootstrapCmd.Flags().StringVar(&r2StorageClass, "storage-class", "Standard", "Default storage class: Standard or InfrequentAccess")
+	r2LogpushBootstrapCmd.Flags().StringVar(&expiresOn, "expires-on", "", "Optional RFC3339 expiry time for minted helper tokens")
+	r2LogpushBootstrapCmd.Flags().BoolVar(&activateR2ControlToken, "activate-control-token", true, "Activate the minted control-plane token as the profile API token")
+
 	workerLogsRun := func(args []string) error {
 		resolvedToken, err := resolveAPIToken()
 		if err != nil {
@@ -770,6 +964,12 @@ func main() {
 	workerLogSinkCmd.AddCommand(workerLogSinkSetupR2Cmd)
 	workerLogsNestedCmd.AddCommand(workerLogSinkCmd)
 	workerCmd.AddCommand(workerLogsNestedCmd)
+	r2BucketCmd.AddCommand(r2BucketCreateCmd)
+	r2CredsCmd.AddCommand(r2CredsMintCmd)
+	r2LogpushCmd.AddCommand(r2LogpushBootstrapCmd)
+	r2Cmd.AddCommand(r2BucketCmd)
+	r2Cmd.AddCommand(r2CredsCmd)
+	r2Cmd.AddCommand(r2LogpushCmd)
 
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(setCmd)
@@ -788,6 +988,7 @@ func main() {
 	rootCmd.AddCommand(workersListCmd)
 	rootCmd.AddCommand(workerLogsCmd)
 	rootCmd.AddCommand(workerCmd)
+	rootCmd.AddCommand(r2Cmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println("❌", err)
@@ -1188,6 +1389,22 @@ func permissionsFromPreset(preset string) ([]string, string, error) {
 			"Workers Observability Telemetry Write",
 			"Logs Write",
 		}, "account", nil
+	case "r2-admin":
+		return []string{
+			"Workers R2 Storage Read",
+			"Workers R2 Storage Write",
+		}, "account", nil
+	case "workers-r2-logpush-admin":
+		return []string{
+			"Workers Scripts Read",
+			"Workers Scripts Write",
+			"Workers Observability Read",
+			"Workers Observability Write",
+			"Workers Observability Telemetry Write",
+			"Logs Write",
+			"Workers R2 Storage Read",
+			"Workers R2 Storage Write",
+		}, "account", nil
 	default:
 		return nil, "", fmt.Errorf("unknown preset %q", preset)
 	}
@@ -1442,6 +1659,171 @@ func createLogpushJob(apiToken, accountID string, payload map[string]any) (*logp
 		return nil, err
 	}
 	return &resp.Result, nil
+}
+
+func listR2Buckets(apiToken, accountID string) ([]r2Bucket, error) {
+	client := &http.Client{}
+	resp, err := getJSON[[]r2Bucket](client, fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/r2/buckets", accountID), apiToken)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Result, nil
+}
+
+func createR2Bucket(apiToken, accountID, name, jurisdiction, locationHint, storageClass string) (*r2Bucket, error) {
+	payload := map[string]any{
+		"name": name,
+	}
+	if trimmed := strings.TrimSpace(locationHint); trimmed != "" {
+		payload["locationHint"] = trimmed
+	}
+	if trimmed := strings.TrimSpace(storageClass); trimmed != "" {
+		payload["storageClass"] = trimmed
+	}
+
+	req, err := newJSONRequest("POST", fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/r2/buckets", accountID), apiToken, payload)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("cf-r2-jurisdiction", normalizeR2Jurisdiction(jurisdiction))
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var envelope apiEnvelope[r2Bucket]
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, err
+	}
+	if !envelope.Success {
+		return nil, apiErrors(envelope.Errors)
+	}
+	return &envelope.Result, nil
+}
+
+func ensureR2Bucket(apiToken, accountID, name, jurisdiction, locationHint, storageClass string) (*r2Bucket, bool, error) {
+	buckets, err := listR2Buckets(apiToken, accountID)
+	if err == nil {
+		for _, bucket := range buckets {
+			if bucket.Name == name && bucket.Jurisdiction == normalizeR2Jurisdiction(jurisdiction) {
+				return &bucket, false, nil
+			}
+		}
+	}
+	created, createErr := createR2Bucket(apiToken, accountID, name, jurisdiction, locationHint, storageClass)
+	if createErr != nil {
+		return nil, false, createErr
+	}
+	return created, true, nil
+}
+
+func mintPresetToken(bootstrap, tokenName, preset, accountID, zoneID, tokenExpiry string) (*tokenCreateResult, error) {
+	permissionNames, presetScope, err := permissionsFromPreset(preset)
+	if err != nil {
+		return nil, err
+	}
+	groups, err := resolvePermissionGroupsByName(bootstrap, permissionNames)
+	if err != nil {
+		return nil, err
+	}
+
+	resourceID := ""
+	if presetScope == "account" {
+		resourceID = accountID
+	}
+	if presetScope == "zone" {
+		resourceID = zoneID
+	}
+	resources, err := buildResources(presetScope, resourceID, accountID)
+	if err != nil {
+		return nil, err
+	}
+
+	payload := map[string]any{
+		"name": tokenName,
+		"policies": []tokenPolicy{
+			{
+				Effect:           "allow",
+				PermissionGroups: groups,
+				Resources:        resources,
+			},
+		},
+	}
+	if tokenExpiry != "" {
+		payload["expires_on"] = tokenExpiry
+	}
+
+	return mintGenericToken(bootstrap, genericMintRequest{
+		Owner:     "user",
+		AccountID: accountID,
+		Payload:   payload,
+	})
+}
+
+func mintR2BucketCredentials(bootstrap, accountID, bucketName, jurisdiction, tokenName, tokenExpiry string) (*tokenCreateResult, string, string, string, error) {
+	groups, err := resolvePermissionGroupsByName(bootstrap, []string{
+		"Workers R2 Storage Bucket Item Read",
+		"Workers R2 Storage Bucket Item Write",
+	})
+	if err != nil {
+		return nil, "", "", "", err
+	}
+
+	normalizedJurisdiction := normalizeR2Jurisdiction(jurisdiction)
+	resourceKey := fmt.Sprintf("com.cloudflare.edge.r2.bucket.%s_%s_%s", accountID, normalizedJurisdiction, bucketName)
+	payload := map[string]any{
+		"name": tokenName,
+		"policies": []tokenPolicy{
+			{
+				Effect:           "allow",
+				PermissionGroups: groups,
+				Resources: map[string]any{
+					resourceKey: "*",
+				},
+			},
+		},
+	}
+	if tokenExpiry != "" {
+		payload["expires_on"] = tokenExpiry
+	}
+
+	token, err := mintGenericToken(bootstrap, genericMintRequest{
+		Owner:   "user",
+		Payload: payload,
+	})
+	if err != nil {
+		return nil, "", "", "", err
+	}
+
+	secretHash := sha256.Sum256([]byte(token.Value))
+	secretAccessKey := fmt.Sprintf("%x", secretHash[:])
+	return token, token.ID, secretAccessKey, r2EndpointForAccount(accountID, normalizedJurisdiction), nil
+}
+
+func storeR2LogpushSecrets(bucketName, accessKeyID, secretAccessKey, path string) error {
+	if err := writeSecretToKeychain(defaultWorkerR2BucketServiceName(), bucketName); err != nil {
+		return err
+	}
+	if err := writeSecretToKeychain(defaultWorkerR2AccessKeyIDServiceName(), accessKeyID); err != nil {
+		return err
+	}
+	if err := writeSecretToKeychain(defaultWorkerR2SecretAccessKeyServiceName(), secretAccessKey); err != nil {
+		return err
+	}
+	if path != "" {
+		if err := writeSecretToKeychain(defaultWorkerR2PathServiceName(), path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ensureWorkerLogpushR2Job(apiToken, accountID, workerName string) (*logpushJob, error) {
@@ -1860,6 +2242,30 @@ func defaultWorkerR2SecretAccessKeyServiceName() string {
 
 func defaultWorkerR2PathServiceName() string {
 	return fmt.Sprintf("%s cloudflare workers logpush path", profile)
+}
+
+func normalizeR2Jurisdiction(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "default":
+		return "default"
+	case "eu":
+		return "eu"
+	case "fedramp":
+		return "fedramp"
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+func r2EndpointForAccount(accountID, jurisdiction string) string {
+	switch normalizeR2Jurisdiction(jurisdiction) {
+	case "eu":
+		return fmt.Sprintf("https://%s.eu.r2.cloudflarestorage.com", accountID)
+	case "fedramp":
+		return fmt.Sprintf("https://%s.fedramp.r2.cloudflarestorage.com", accountID)
+	default:
+		return fmt.Sprintf("https://%s.r2.cloudflarestorage.com", accountID)
+	}
 }
 
 func defaultNamedTokenServiceName(tokenName string) string {

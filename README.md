@@ -13,6 +13,7 @@ A CLI tool written in Go using Cobra to update or insert **A records** (or other
 - View recent persisted Worker logs from Cloudflare observability
 - Enable persisted Worker logs and invocation logs from the CLI
 - Create account-level Workers Logpush jobs that export to R2
+- Create R2 buckets and mint bucket-scoped R2 S3 credentials from the CLI
 - Add optional comment to records
 - Supports TTL and Cloudflare proxy settings
 - Supports record types beyond `A`
@@ -83,6 +84,9 @@ cf worker logs [worker] [--since 10m] [--limit 50] [--view events|invocations] [
 cf worker logs recent [worker] [--since 10m] [--limit 50]
 cf worker logs enable [worker] [--persist] [--invocations] [--sample 1]
 cf worker logs sink setup-r2 [worker]
+cf r2 bucket create [name]
+cf r2 creds mint [bucket]
+cf r2 logpush bootstrap [worker] [bucket(optional)]
 cf doctor
 ```
 
@@ -284,6 +288,51 @@ Notes:
 - `cf worker logs enable ...` uses the Worker script settings API and requires broader Worker permissions than the read-only recent-log flow.
 - `cf worker logs sink setup-r2 ...` uses the account-level Logpush API and requires `Logs Write` plus valid R2 credentials.
 - These Worker commands are account-level, so they use `CF_ACCOUNT_ID` or the configured account ID keychain entry in addition to the API token.
+
+## R2 Helpers
+
+Create or reuse an R2 bucket:
+
+```bash
+cf r2 bucket create ama-workers-trace-events
+```
+
+Mint bucket-scoped R2 S3 credentials:
+
+```bash
+cf r2 creds mint ama-workers-trace-events
+```
+
+This returns:
+
+- `access_key_id`: the Cloudflare token ID
+- `secret_access_key`: the SHA-256 hash of the minted token value
+- `endpoint`: the R2 S3 endpoint for the account and jurisdiction
+
+Bootstrap the full Worker Logpush R2 path in one command:
+
+```bash
+cf r2 logpush bootstrap amaos-docs-alias-ingest ama-workers-trace-events
+```
+
+Useful presets:
+
+```bash
+cf mint:token "ama r2 admin" --preset r2-admin --store
+cf mint:token "ama workers+r2 admin" --preset workers-r2-logpush-admin --store --activate
+```
+
+The `r2-admin` preset includes:
+
+- `Workers R2 Storage Read`
+- `Workers R2 Storage Write`
+
+The `workers-r2-logpush-admin` preset combines:
+
+- Worker observability/logging management permissions
+- `Logs Write`
+- `Workers R2 Storage Read`
+- `Workers R2 Storage Write`
 
 ## 🔁 Mint A New DNS Token
 
