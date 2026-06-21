@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -44,6 +45,23 @@ var tokenPreset string
 var tokenStoreService string
 var activateMintedToken bool
 var tokenPermissions []string
+var workersSince string
+var workersLimit int
+var workersView string
+var workersSearch string
+var workerLogsPersist bool
+var workerLogsInvocation bool
+var workerLogsSampleRate float64
+var workerLogsEnableLogpush bool
+var workerR2Bucket string
+var workerR2Path string
+var workerR2AccessKeyID string
+var workerR2SecretAccessKey string
+var workerLogpushName string
+var workerLogpushSampleRate float64
+var workerLogpushMaxUploadInterval int
+var workerLogpushMaxUploadRecords int
+var workerLogpushMaxUploadBytes int
 
 type dnsRecord struct {
 	ID      string `json:"id"`
@@ -82,6 +100,75 @@ type permissionGroup struct {
 	Name     string   `json:"name"`
 	Category string   `json:"category"`
 	Scopes   []string `json:"scopes"`
+}
+
+type workerRoute struct {
+	Pattern string `json:"pattern"`
+}
+
+type workerObservabilityLogs struct {
+	Enabled        bool    `json:"enabled"`
+	InvocationLogs bool    `json:"invocation_logs"`
+	Persist        bool    `json:"persist"`
+	HeadSampling   float64 `json:"head_sampling_rate"`
+}
+
+type workerObservability struct {
+	Enabled bool                    `json:"enabled"`
+	Logs    workerObservabilityLogs `json:"logs"`
+}
+
+type workerScript struct {
+	ID            string              `json:"id"`
+	ModifiedOn    string              `json:"modified_on"`
+	Logpush       bool                `json:"logpush"`
+	Routes        []workerRoute       `json:"routes"`
+	Observability workerObservability `json:"observability"`
+}
+
+type workerScriptSettings struct {
+	Logpush       bool                `json:"logpush"`
+	Observability workerObservability `json:"observability"`
+}
+
+type telemetryEvent struct {
+	Dataset   string         `json:"dataset"`
+	Source    any            `json:"source"`
+	Timestamp int64          `json:"timestamp"`
+	Metadata  map[string]any `json:"$metadata"`
+	Workers   map[string]any `json:"$workers"`
+}
+
+type telemetryEventsResult struct {
+	Count  int              `json:"count"`
+	Events []telemetryEvent `json:"events"`
+}
+
+type telemetryQueryResult struct {
+	Events      telemetryEventsResult       `json:"events"`
+	Invocations map[string][]telemetryEvent `json:"invocations"`
+}
+
+type logpushOutputOptions struct {
+	FieldNames      []string `json:"field_names,omitempty"`
+	OutputType      string   `json:"output_type,omitempty"`
+	TimestampFormat string   `json:"timestamp_format,omitempty"`
+	SampleRate      float64  `json:"sample_rate,omitempty"`
+}
+
+type logpushJob struct {
+	ID                       int                  `json:"id"`
+	Name                     string               `json:"name"`
+	Dataset                  string               `json:"dataset"`
+	DestinationConf          string               `json:"destination_conf"`
+	Enabled                  bool                 `json:"enabled"`
+	ErrorMessage             string               `json:"error_message"`
+	LastComplete             string               `json:"last_complete"`
+	LastError                string               `json:"last_error"`
+	MaxUploadBytes           int                  `json:"max_upload_bytes"`
+	MaxUploadIntervalSeconds int                  `json:"max_upload_interval_seconds"`
+	MaxUploadRecords         int                  `json:"max_upload_records"`
+	OutputOptions            logpushOutputOptions `json:"output_options"`
 }
 
 type apiMessage struct {
@@ -311,6 +398,12 @@ func main() {
 			reportSecretResolution("bootstrap token", resolveBootstrapToken)
 			reportSecretResolution("zone id", resolveZoneID)
 			reportSecretResolution("account id", resolveAccountID)
+			reportSecretResolution("workers log R2 bucket", resolveWorkerR2Bucket)
+			reportSecretResolution("workers log R2 access key id", resolveWorkerR2AccessKeyID)
+			reportSecretResolution("workers log R2 secret access key", resolveWorkerR2SecretAccessKey)
+			reportSecretResolution("workers log R2 path", func() (string, error) {
+				return resolveWorkerR2Path("default")
+			})
 			return nil
 		},
 	}
@@ -419,7 +512,7 @@ func main() {
 	mintGenericCmd.Flags().StringVar(&tokenOwner, "owner", "user", "Token owner type: user or account")
 	mintGenericCmd.Flags().StringVar(&tokenScope, "scope", "", "Resource scope: zone, account, all-zones-in-account, all-zones, or all-accounts")
 	mintGenericCmd.Flags().StringVar(&tokenResourceID, "resource-id", "", "Explicit resource ID override for the chosen scope")
-	mintGenericCmd.Flags().StringVar(&tokenPreset, "preset", "", "Preset: dns-edit, dns-read, zone-read, zone-write")
+	mintGenericCmd.Flags().StringVar(&tokenPreset, "preset", "", "Preset: dns-edit, dns-read, zone-read, zone-write, workers-logs-read, workers-logs-admin")
 	mintGenericCmd.Flags().StringSliceVar(&tokenPermissions, "permission", nil, "Permission group names, repeatable")
 	mintGenericCmd.Flags().StringVar(&tokenStoreService, "store-service", "", "Keychain service name for storing the minted token")
 	mintGenericCmd.Flags().BoolVar(&storeMintedToken, "store", true, "Store the minted token in the macOS keychain")
@@ -450,6 +543,234 @@ func main() {
 	}
 	permsCmd.Flags().StringVar(&bootstrapToken, "bootstrap-token", "", "Cloudflare bootstrap token")
 
+	workerLogsRun := func(args []string) error {
+		resolvedToken, err := resolveAPIToken()
+		if err != nil {
+			return err
+		}
+		resolvedAccountID, err := resolveAccountID()
+		if err != nil {
+			return err
+		}
+
+		name := ""
+		if len(args) == 1 {
+			name = args[0]
+		}
+		return runWorkerLogsRecent(resolvedToken, resolvedAccountID, name)
+	}
+
+	workersListCmd := &cobra.Command{
+		Use:   "workers:list [filter]",
+		Short: "List deployed Workers for the current account",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedToken, err := resolveAPIToken()
+			if err != nil {
+				return err
+			}
+			resolvedAccountID, err := resolveAccountID()
+			if err != nil {
+				return err
+			}
+
+			filter := ""
+			if len(args) == 1 {
+				filter = args[0]
+			}
+
+			workers, err := listWorkers(resolvedToken, resolvedAccountID)
+			if err != nil {
+				return err
+			}
+			printWorkers(workers, filter)
+			return nil
+		},
+	}
+	workersListCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
+	workersListCmd.Flags().StringVar(&accountID, "account-id", "", "Cloudflare account ID")
+
+	workerLogsCmd := &cobra.Command{
+		Use:   "worker:logs [worker]",
+		Short: "Show recent persisted logs for a deployed Worker",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return workerLogsRun(args)
+		},
+	}
+	workerLogsCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
+	workerLogsCmd.Flags().StringVar(&accountID, "account-id", "", "Cloudflare account ID")
+	workerLogsCmd.Flags().StringVar(&workersSince, "since", "1h", "Look back window, for example 30m, 2h, or 24h")
+	workerLogsCmd.Flags().IntVar(&workersLimit, "limit", 20, "Maximum number of recent log entries or invocation groups to print")
+	workerLogsCmd.Flags().StringVar(&workersView, "view", "events", "Observability view to query: events or invocations")
+	workerLogsCmd.Flags().StringVar(&workersSearch, "search", "", "Optional substring filter against log messages")
+
+	workerCmd := &cobra.Command{
+		Use:   "worker",
+		Short: "Cloudflare Worker utilities",
+	}
+
+	workerLogsNestedCmd := &cobra.Command{
+		Use:              "logs [worker]",
+		Short:            "Show recent persisted logs for a deployed Worker",
+		TraverseChildren: true,
+		Args:             cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return workerLogsRun(args)
+		},
+	}
+	workerLogsNestedCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
+	workerLogsNestedCmd.Flags().StringVar(&accountID, "account-id", "", "Cloudflare account ID")
+	workerLogsNestedCmd.Flags().StringVar(&workersSince, "since", "10m", "Look back window, for example 5m, 10m, 30m, 2h, or 24h")
+	workerLogsNestedCmd.Flags().IntVar(&workersLimit, "limit", 50, "Maximum number of recent log entries or invocation groups to print")
+	workerLogsNestedCmd.Flags().StringVar(&workersView, "view", "events", "Observability view to query: events or invocations")
+	workerLogsNestedCmd.Flags().StringVar(&workersSearch, "search", "", "Optional substring filter against log messages")
+
+	workerLogsRecentCmd := &cobra.Command{
+		Use:   "recent [worker]",
+		Short: "Show recent persisted logs for a deployed Worker",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return workerLogsRun(args)
+		},
+	}
+	workerLogsRecentCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
+	workerLogsRecentCmd.Flags().StringVar(&accountID, "account-id", "", "Cloudflare account ID")
+	workerLogsRecentCmd.Flags().StringVar(&workersSince, "since", "10m", "Look back window, for example 5m, 10m, 30m, 2h, or 24h")
+	workerLogsRecentCmd.Flags().IntVar(&workersLimit, "limit", 50, "Maximum number of recent log entries or invocation groups to print")
+	workerLogsRecentCmd.Flags().StringVar(&workersView, "view", "events", "Observability view to query: events or invocations")
+	workerLogsRecentCmd.Flags().StringVar(&workersSearch, "search", "", "Optional substring filter against log messages")
+
+	workerLogsEnableCmd := &cobra.Command{
+		Use:   "enable [worker]",
+		Short: "Enable persisted Worker logs and invocation logs for a Worker",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedToken, err := resolveAPIToken()
+			if err != nil {
+				return err
+			}
+			resolvedAccountID, err := resolveAccountID()
+			if err != nil {
+				return err
+			}
+
+			workers, err := listWorkers(resolvedToken, resolvedAccountID)
+			if err != nil {
+				return err
+			}
+
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
+			}
+			worker, err := selectWorker(workers, name)
+			if err != nil {
+				return err
+			}
+
+			updated, err := enableWorkerLogs(
+				resolvedToken,
+				resolvedAccountID,
+				worker.ID,
+				workerLogsPersist,
+				workerLogsInvocation,
+				workerLogsSampleRate,
+				workerLogsEnableLogpush,
+			)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("✅ Enabled logs for %s\n", worker.ID)
+			fmt.Printf("observability=%t persist=%t invocation_logs=%t sample=%.2f logpush=%t\n",
+				updated.Observability.Enabled,
+				updated.Observability.Logs.Persist,
+				updated.Observability.Logs.InvocationLogs,
+				updated.Observability.Logs.HeadSampling,
+				updated.Logpush,
+			)
+			return nil
+		},
+	}
+	workerLogsEnableCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
+	workerLogsEnableCmd.Flags().StringVar(&accountID, "account-id", "", "Cloudflare account ID")
+	workerLogsEnableCmd.Flags().BoolVar(&workerLogsPersist, "persist", true, "Enable persisted Workers Logs")
+	workerLogsEnableCmd.Flags().BoolVar(&workerLogsInvocation, "invocations", true, "Enable invocation logs")
+	workerLogsEnableCmd.Flags().Float64Var(&workerLogsSampleRate, "sample", 1, "Head sampling rate from 0 to 1")
+	workerLogsEnableCmd.Flags().BoolVar(&workerLogsEnableLogpush, "logpush", false, "Also enable the Worker-level logpush flag so account-level Workers Logpush jobs can export this Worker")
+
+	workerLogSinkCmd := &cobra.Command{
+		Use:   "sink",
+		Short: "Manage Workers log export sinks",
+	}
+
+	workerLogSinkSetupR2Cmd := &cobra.Command{
+		Use:   "setup-r2 [worker]",
+		Short: "Create or verify an R2 Logpush job for Workers trace events and enable logpush for the target Worker",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedToken, err := resolveAPIToken()
+			if err != nil {
+				return err
+			}
+			resolvedAccountID, err := resolveAccountID()
+			if err != nil {
+				return err
+			}
+
+			workers, err := listWorkers(resolvedToken, resolvedAccountID)
+			if err != nil {
+				return err
+			}
+
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
+			}
+			worker, err := selectWorker(workers, name)
+			if err != nil {
+				return err
+			}
+
+			job, err := ensureWorkerLogpushR2Job(resolvedToken, resolvedAccountID, worker.ID)
+			if err != nil {
+				return err
+			}
+			if _, err := enableWorkerLogs(resolvedToken, resolvedAccountID, worker.ID, true, true, 1, true); err != nil {
+				return err
+			}
+
+			fmt.Printf("✅ Workers Logpush R2 sink ready for %s\n", worker.ID)
+			fmt.Printf("job_id=%d enabled=%t interval=%ds records=%d bytes=%d\n",
+				job.ID,
+				job.Enabled,
+				job.MaxUploadIntervalSeconds,
+				job.MaxUploadRecords,
+				job.MaxUploadBytes,
+			)
+			fmt.Printf("destination=%s\n", redactDestinationConf(job.DestinationConf))
+			return nil
+		},
+	}
+	workerLogSinkSetupR2Cmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
+	workerLogSinkSetupR2Cmd.Flags().StringVar(&accountID, "account-id", "", "Cloudflare account ID")
+	workerLogSinkSetupR2Cmd.Flags().StringVar(&workerR2Bucket, "bucket", "", "R2 bucket for Workers trace event logs")
+	workerLogSinkSetupR2Cmd.Flags().StringVar(&workerR2Path, "path", "", "R2 path prefix, for example workers-trace-events")
+	workerLogSinkSetupR2Cmd.Flags().StringVar(&workerR2AccessKeyID, "r2-access-key-id", "", "R2 access key ID")
+	workerLogSinkSetupR2Cmd.Flags().StringVar(&workerR2SecretAccessKey, "r2-secret-access-key", "", "R2 secret access key")
+	workerLogSinkSetupR2Cmd.Flags().StringVar(&workerLogpushName, "job-name", "", "Optional Logpush job name")
+	workerLogSinkSetupR2Cmd.Flags().Float64Var(&workerLogpushSampleRate, "sample", 1, "Logpush sampling rate from 0 to 1")
+	workerLogSinkSetupR2Cmd.Flags().IntVar(&workerLogpushMaxUploadInterval, "max-upload-interval", 30, "Max upload interval in seconds for Workers Logpush batches")
+	workerLogSinkSetupR2Cmd.Flags().IntVar(&workerLogpushMaxUploadRecords, "max-upload-records", 1000, "Max records per Workers Logpush batch")
+	workerLogSinkSetupR2Cmd.Flags().IntVar(&workerLogpushMaxUploadBytes, "max-upload-bytes", 5000000, "Max uncompressed bytes per Workers Logpush batch")
+
+	workerLogsNestedCmd.AddCommand(workerLogsRecentCmd)
+	workerLogsNestedCmd.AddCommand(workerLogsEnableCmd)
+	workerLogSinkCmd.AddCommand(workerLogSinkSetupR2Cmd)
+	workerLogsNestedCmd.AddCommand(workerLogSinkCmd)
+	workerCmd.AddCommand(workerLogsNestedCmd)
+
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(setCmd)
 	rootCmd.AddCommand(listCmd)
@@ -464,6 +785,9 @@ func main() {
 	rootCmd.AddCommand(mintGenericCmd)
 	rootCmd.AddCommand(permsCmd)
 	rootCmd.AddCommand(doctorCmd)
+	rootCmd.AddCommand(workersListCmd)
+	rootCmd.AddCommand(workerLogsCmd)
+	rootCmd.AddCommand(workerCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println("❌", err)
@@ -849,6 +1173,21 @@ func permissionsFromPreset(preset string) ([]string, string, error) {
 		return []string{"Zone Read"}, "zone", nil
 	case "zone-write":
 		return []string{"Zone Write"}, "zone", nil
+	case "workers-logs-read":
+		return []string{
+			"Workers Scripts Read",
+			"Workers Observability Read",
+			"Workers Observability Telemetry Write",
+		}, "account", nil
+	case "workers-logs-admin":
+		return []string{
+			"Workers Scripts Read",
+			"Workers Scripts Write",
+			"Workers Observability Read",
+			"Workers Observability Write",
+			"Workers Observability Telemetry Write",
+			"Logs Write",
+		}, "account", nil
 	default:
 		return nil, "", fmt.Errorf("unknown preset %q", preset)
 	}
@@ -896,6 +1235,300 @@ func resolvePermissionGroupsByName(bootstrap string, names []string) ([]tokenPer
 		return nil, errors.New("no valid permission groups resolved")
 	}
 	return resolved, nil
+}
+
+func listWorkers(apiToken, accountID string) ([]workerScript, error) {
+	client := &http.Client{}
+	resp, err := getJSON[[]workerScript](client, fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/workers/scripts", accountID), apiToken)
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Slice(resp.Result, func(i, j int) bool {
+		return resp.Result[i].ID < resp.Result[j].ID
+	})
+	return resp.Result, nil
+}
+
+func selectWorker(workers []workerScript, requested string) (*workerScript, error) {
+	if len(workers) == 0 {
+		return nil, errors.New("no deployed Workers found for this account")
+	}
+	if requested == "" {
+		if len(workers) == 1 {
+			return &workers[0], nil
+		}
+		names := make([]string, 0, len(workers))
+		for _, worker := range workers {
+			names = append(names, worker.ID)
+		}
+		return nil, fmt.Errorf("multiple Workers found; specify one explicitly. Available: %s", strings.Join(names, ", "))
+	}
+
+	for i := range workers {
+		if workers[i].ID == requested {
+			return &workers[i], nil
+		}
+	}
+
+	lowerRequested := strings.ToLower(requested)
+	var matched []workerScript
+	for _, worker := range workers {
+		if strings.EqualFold(worker.ID, requested) || strings.Contains(strings.ToLower(worker.ID), lowerRequested) {
+			matched = append(matched, worker)
+		}
+	}
+	if len(matched) == 1 {
+		return &matched[0], nil
+	}
+	if len(matched) > 1 {
+		names := make([]string, 0, len(matched))
+		for _, worker := range matched {
+			names = append(names, worker.ID)
+		}
+		return nil, fmt.Errorf("worker name %q is ambiguous; matches: %s", requested, strings.Join(names, ", "))
+	}
+
+	return nil, fmt.Errorf("worker %q not found; use `cf workers:list` to discover deployed Workers", requested)
+}
+
+func runWorkerLogsRecent(apiToken, accountID, name string) error {
+	since, err := time.ParseDuration(strings.TrimSpace(workersSince))
+	if err != nil || since <= 0 {
+		return fmt.Errorf("invalid --since value %q; use a Go duration like 5m, 10m, 30m, 2h, or 24h", workersSince)
+	}
+	if workersLimit <= 0 {
+		return errors.New("--limit must be greater than 0")
+	}
+
+	view := strings.ToLower(strings.TrimSpace(workersView))
+	if view != "events" && view != "invocations" {
+		return fmt.Errorf("unsupported --view %q; use events or invocations", workersView)
+	}
+
+	workers, err := listWorkers(apiToken, accountID)
+	if err != nil {
+		return err
+	}
+
+	worker, err := selectWorker(workers, name)
+	if err != nil {
+		return err
+	}
+
+	result, err := queryWorkerLogs(apiToken, accountID, worker.ID, view, since, workersLimit, workersSearch)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Worker: %s\n", worker.ID)
+	fmt.Printf("Window: last %s\n", since)
+	fmt.Printf("View: %s\n", view)
+	if workersSearch != "" {
+		fmt.Printf("Search: %s\n", workersSearch)
+	}
+	if !worker.Observability.Enabled || !worker.Observability.Logs.Persist {
+		fmt.Println("Warning: this Worker does not report persisted logs as fully enabled in script metadata, so results may be empty. Run `cf worker logs enable <worker>` first.")
+	}
+
+	if view == "invocations" {
+		printWorkerInvocations(result.Invocations)
+		return nil
+	}
+
+	printWorkerEvents(result.Events.Events)
+	return nil
+}
+
+func queryWorkerLogs(apiToken, accountID, workerName, view string, since time.Duration, limit int, search string) (*telemetryQueryResult, error) {
+	now := time.Now().UTC()
+	filters := []map[string]any{
+		{
+			"key":       "$workers.scriptName",
+			"operation": "eq",
+			"type":      "string",
+			"value":     workerName,
+		},
+	}
+	if trimmed := strings.TrimSpace(search); trimmed != "" {
+		filters = append(filters, map[string]any{
+			"key":       "$metadata.message",
+			"operation": "contains",
+			"type":      "string",
+			"value":     trimmed,
+		})
+	}
+
+	payload := map[string]any{
+		"queryId": "adhoc",
+		"timeframe": map[string]int64{
+			"from": now.Add(-since).UnixMilli(),
+			"to":   now.UnixMilli(),
+		},
+		"view":  view,
+		"limit": limit,
+		"parameters": map[string]any{
+			"datasets":          []string{"cloudflare-workers"},
+			"filterCombination": "and",
+			"filters":           filters,
+		},
+	}
+
+	client := &http.Client{}
+	resp, err := postJSON[telemetryQueryResult](client, fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/workers/observability/telemetry/query", accountID), apiToken, payload)
+	if err != nil {
+		return nil, err
+	}
+	return &resp.Result, nil
+}
+
+func getWorkerSettings(apiToken, accountID, workerName string) (*workerScriptSettings, error) {
+	client := &http.Client{}
+	resp, err := getJSON[workerScriptSettings](client, fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/workers/scripts/%s/settings", accountID, url.PathEscape(workerName)), apiToken)
+	if err != nil {
+		return nil, err
+	}
+	return &resp.Result, nil
+}
+
+func enableWorkerLogs(apiToken, accountID, workerName string, persist, invocationLogs bool, sampleRate float64, enableLogpush bool) (*workerScriptSettings, error) {
+	if sampleRate < 0 || sampleRate > 1 {
+		return nil, fmt.Errorf("invalid sample rate %.4f; expected a value between 0 and 1", sampleRate)
+	}
+
+	settings := map[string]any{
+		"observability": map[string]any{
+			"enabled":            true,
+			"head_sampling_rate": sampleRate,
+			"logs": map[string]any{
+				"enabled":            true,
+				"persist":            persist,
+				"invocation_logs":    invocationLogs,
+				"head_sampling_rate": sampleRate,
+			},
+		},
+	}
+	if enableLogpush {
+		settings["logpush"] = true
+	}
+
+	client := &http.Client{}
+	resp, err := patchMultipartJSON[workerScriptSettings](
+		client,
+		fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/workers/scripts/%s/settings", accountID, url.PathEscape(workerName)),
+		apiToken,
+		"settings",
+		settings,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &resp.Result, nil
+}
+
+func listLogpushJobs(apiToken, accountID string) ([]logpushJob, error) {
+	client := &http.Client{}
+	resp, err := getJSON[[]logpushJob](client, fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/logpush/jobs", accountID), apiToken)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Result, nil
+}
+
+func createLogpushJob(apiToken, accountID string, payload map[string]any) (*logpushJob, error) {
+	client := &http.Client{}
+	resp, err := postJSON[logpushJob](client, fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/logpush/jobs", accountID), apiToken, payload)
+	if err != nil {
+		return nil, err
+	}
+	return &resp.Result, nil
+}
+
+func ensureWorkerLogpushR2Job(apiToken, accountID, workerName string) (*logpushJob, error) {
+	bucket, err := resolveWorkerR2Bucket()
+	if err != nil {
+		return nil, err
+	}
+	accessKeyID, err := resolveWorkerR2AccessKeyID()
+	if err != nil {
+		return nil, err
+	}
+	secretAccessKey, err := resolveWorkerR2SecretAccessKey()
+	if err != nil {
+		return nil, err
+	}
+	pathPrefix, err := resolveWorkerR2Path(workerName)
+	if err != nil {
+		return nil, err
+	}
+	if workerLogpushSampleRate < 0 || workerLogpushSampleRate > 1 {
+		return nil, fmt.Errorf("invalid logpush sample rate %.4f; expected a value between 0 and 1", workerLogpushSampleRate)
+	}
+	if workerLogpushMaxUploadInterval != 0 && (workerLogpushMaxUploadInterval < 30 || workerLogpushMaxUploadInterval > 300) {
+		return nil, fmt.Errorf("--max-upload-interval must be 0 or between 30 and 300 seconds")
+	}
+	if workerLogpushMaxUploadRecords != 0 && (workerLogpushMaxUploadRecords < 1000 || workerLogpushMaxUploadRecords > 1000000) {
+		return nil, fmt.Errorf("--max-upload-records must be 0 or between 1000 and 1000000")
+	}
+	if workerLogpushMaxUploadBytes != 0 && (workerLogpushMaxUploadBytes < 5000000 || workerLogpushMaxUploadBytes > 1000000000) {
+		return nil, fmt.Errorf("--max-upload-bytes must be 0 or between 5000000 and 1000000000")
+	}
+
+	destination := fmt.Sprintf(
+		"r2://%s/%s/{DATE}?account-id=%s&access-key-id=%s&secret-access-key=%s",
+		strings.TrimSpace(bucket),
+		strings.Trim(pathPrefix, "/"),
+		accountID,
+		url.QueryEscape(strings.TrimSpace(accessKeyID)),
+		url.QueryEscape(strings.TrimSpace(secretAccessKey)),
+	)
+
+	jobs, err := listLogpushJobs(apiToken, accountID)
+	if err != nil {
+		return nil, err
+	}
+	for _, job := range jobs {
+		if job.Dataset != "workers_trace_events" {
+			continue
+		}
+		if strings.HasPrefix(job.DestinationConf, fmt.Sprintf("r2://%s/%s/", strings.TrimSpace(bucket), strings.Trim(pathPrefix, "/"))) ||
+			strings.HasPrefix(job.DestinationConf, fmt.Sprintf("r2://%s/%s?", strings.TrimSpace(bucket), strings.Trim(pathPrefix, "/"))) {
+			return &job, nil
+		}
+	}
+
+	jobName := strings.TrimSpace(workerLogpushName)
+	if jobName == "" {
+		jobName = fmt.Sprintf("%s workers trace events", profile)
+	}
+
+	payload := map[string]any{
+		"name":             jobName,
+		"destination_conf": destination,
+		"dataset":          "workers_trace_events",
+		"enabled":          true,
+		"output_options": map[string]any{
+			"field_names": []string{
+				"Event",
+				"EventTimestampMs",
+				"Outcome",
+				"Exceptions",
+				"Logs",
+				"ScriptName",
+				"ScriptVersion",
+				"CPUTimeMs",
+				"WallTimeMs",
+			},
+			"output_type":      "ndjson",
+			"timestamp_format": "rfc3339",
+			"sample_rate":      workerLogpushSampleRate,
+		},
+		"max_upload_interval_seconds": workerLogpushMaxUploadInterval,
+		"max_upload_records":          workerLogpushMaxUploadRecords,
+		"max_upload_bytes":            workerLogpushMaxUploadBytes,
+	}
+
+	return createLogpushJob(apiToken, accountID, payload)
 }
 
 func buildResources(scope, resourceID, accountID string) (map[string]any, error) {
@@ -955,6 +1588,78 @@ func getJSON[T any](client *http.Client, requestURL, apiToken string) (*apiEnvel
 
 	var envelope apiEnvelope[T]
 	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, err
+	}
+	if !envelope.Success {
+		return nil, apiErrors(envelope.Errors)
+	}
+
+	return &envelope, nil
+}
+
+func postJSON[T any](client *http.Client, requestURL, apiToken string, payload any) (*apiEnvelope[T], error) {
+	req, err := newJSONRequest("POST", requestURL, apiToken, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var envelope apiEnvelope[T]
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, err
+	}
+	if !envelope.Success {
+		return nil, apiErrors(envelope.Errors)
+	}
+
+	return &envelope, nil
+}
+
+func patchMultipartJSON[T any](client *http.Client, requestURL, apiToken, fieldName string, payload any) (*apiEnvelope[T], error) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	part, err := writer.CreateFormFile(fieldName, fieldName+".json")
+	if err != nil {
+		return nil, err
+	}
+	if err := json.NewEncoder(part).Encode(payload); err != nil {
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("PATCH", requestURL, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Add("Authorization", "Bearer "+apiToken)
+	req.Header.Add("Content-Type", writer.FormDataContentType())
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var envelope apiEnvelope[T]
+	if err := json.Unmarshal(respBody, &envelope); err != nil {
 		return nil, err
 	}
 	if !envelope.Success {
@@ -1141,6 +1846,22 @@ func defaultDomainServiceName() string {
 	return fmt.Sprintf("%s cloudflare domain", profile)
 }
 
+func defaultWorkerR2BucketServiceName() string {
+	return fmt.Sprintf("%s cloudflare r2 log bucket", profile)
+}
+
+func defaultWorkerR2AccessKeyIDServiceName() string {
+	return fmt.Sprintf("%s cloudflare r2 access key id", profile)
+}
+
+func defaultWorkerR2SecretAccessKeyServiceName() string {
+	return fmt.Sprintf("%s cloudflare r2 secret access key", profile)
+}
+
+func defaultWorkerR2PathServiceName() string {
+	return fmt.Sprintf("%s cloudflare workers logpush path", profile)
+}
+
 func defaultNamedTokenServiceName(tokenName string) string {
 	return fmt.Sprintf("%s cloudflare token %s", profile, slugify(tokenName))
 }
@@ -1205,6 +1926,86 @@ func reportSecretResolution(label string, resolver func() (string, error)) {
 	fmt.Printf("✅ %s: %s\n", label, redacted)
 }
 
+func resolveWorkerR2Bucket() (string, error) {
+	if strings.TrimSpace(workerR2Bucket) != "" {
+		return strings.TrimSpace(workerR2Bucket), nil
+	}
+	if env := os.Getenv("CF_R2_LOG_BUCKET"); env != "" {
+		return strings.TrimSpace(env), nil
+	}
+	if env := os.Getenv("CLOUDFLARE_R2_LOG_BUCKET"); env != "" {
+		return strings.TrimSpace(env), nil
+	}
+
+	service := defaultWorkerR2BucketServiceName()
+	value, err := readSecretFromKeychain(service)
+	if err == nil && strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value), nil
+	}
+
+	return "", fmt.Errorf("workers log R2 bucket not provided; set CF_R2_LOG_BUCKET/CLOUDFLARE_R2_LOG_BUCKET or store it in keychain service %q", service)
+}
+
+func resolveWorkerR2AccessKeyID() (string, error) {
+	if strings.TrimSpace(workerR2AccessKeyID) != "" {
+		return strings.TrimSpace(workerR2AccessKeyID), nil
+	}
+	if env := os.Getenv("CF_R2_ACCESS_KEY_ID"); env != "" {
+		return strings.TrimSpace(env), nil
+	}
+	if env := os.Getenv("AWS_ACCESS_KEY_ID"); env != "" {
+		return strings.TrimSpace(env), nil
+	}
+
+	service := defaultWorkerR2AccessKeyIDServiceName()
+	value, err := readSecretFromKeychain(service)
+	if err == nil && strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value), nil
+	}
+
+	return "", fmt.Errorf("workers log R2 access key ID not provided; set CF_R2_ACCESS_KEY_ID/AWS_ACCESS_KEY_ID or store it in keychain service %q", service)
+}
+
+func resolveWorkerR2SecretAccessKey() (string, error) {
+	if strings.TrimSpace(workerR2SecretAccessKey) != "" {
+		return strings.TrimSpace(workerR2SecretAccessKey), nil
+	}
+	if env := os.Getenv("CF_R2_SECRET_ACCESS_KEY"); env != "" {
+		return strings.TrimSpace(env), nil
+	}
+	if env := os.Getenv("AWS_SECRET_ACCESS_KEY"); env != "" {
+		return strings.TrimSpace(env), nil
+	}
+
+	service := defaultWorkerR2SecretAccessKeyServiceName()
+	value, err := readSecretFromKeychain(service)
+	if err == nil && strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value), nil
+	}
+
+	return "", fmt.Errorf("workers log R2 secret access key not provided; set CF_R2_SECRET_ACCESS_KEY/AWS_SECRET_ACCESS_KEY or store it in keychain service %q", service)
+}
+
+func resolveWorkerR2Path(workerName string) (string, error) {
+	if strings.TrimSpace(workerR2Path) != "" {
+		return strings.Trim(strings.TrimSpace(workerR2Path), "/"), nil
+	}
+	if env := os.Getenv("CF_WORKERS_LOGPUSH_PATH"); env != "" {
+		return strings.Trim(strings.TrimSpace(env), "/"), nil
+	}
+	if env := os.Getenv("CLOUDFLARE_WORKERS_LOGPUSH_PATH"); env != "" {
+		return strings.Trim(strings.TrimSpace(env), "/"), nil
+	}
+
+	service := defaultWorkerR2PathServiceName()
+	value, err := readSecretFromKeychain(service)
+	if err == nil && strings.TrimSpace(value) != "" {
+		return strings.Trim(strings.TrimSpace(value), "/"), nil
+	}
+
+	return fmt.Sprintf("workers-trace-events/%s", slugify(workerName)), nil
+}
+
 func printPermissionGroups(groups []permissionGroup, filter string) {
 	filter = strings.ToLower(strings.TrimSpace(filter))
 	filtered := make([]permissionGroup, 0, len(groups))
@@ -1250,6 +2051,154 @@ func printDNSRecords(records []dnsRecord) {
 			record.Proxied,
 			comment,
 		)
+	}
+}
+
+func printWorkers(workers []workerScript, filter string) {
+	filter = strings.ToLower(strings.TrimSpace(filter))
+	filtered := make([]workerScript, 0, len(workers))
+	for _, worker := range workers {
+		if filter == "" {
+			filtered = append(filtered, worker)
+			continue
+		}
+
+		routeText := make([]string, 0, len(worker.Routes))
+		for _, route := range worker.Routes {
+			routeText = append(routeText, route.Pattern)
+		}
+		searchable := strings.ToLower(worker.ID + " " + strings.Join(routeText, " "))
+		if strings.Contains(searchable, filter) {
+			filtered = append(filtered, worker)
+		}
+	}
+
+	if len(filtered) == 0 {
+		fmt.Println("No Workers found.")
+		return
+	}
+
+	for _, worker := range filtered {
+		routes := make([]string, 0, len(worker.Routes))
+		for _, route := range worker.Routes {
+			routes = append(routes, route.Pattern)
+		}
+		routeDisplay := "-"
+		if len(routes) > 0 {
+			routeDisplay = strings.Join(routes, ",")
+		}
+
+		logsState := "disabled"
+		if worker.Observability.Enabled {
+			logsState = "enabled"
+		}
+		if worker.Observability.Logs.Persist {
+			logsState += "/persisted"
+		}
+		if worker.Observability.Logs.InvocationLogs {
+			logsState += "/invocations"
+		}
+
+		fmt.Printf("%s\tmodified=%s\tlogs=%s\tlogpush=%t\troutes=%s\n",
+			worker.ID,
+			worker.ModifiedOn,
+			logsState,
+			worker.Logpush,
+			routeDisplay,
+		)
+	}
+}
+
+func printWorkerEvents(events []telemetryEvent) {
+	if len(events) == 0 {
+		fmt.Println("No recent persisted logs found.")
+		return
+	}
+
+	for _, event := range events {
+		when := formatEventTime(event)
+		level := firstNonEmpty(
+			asString(event.Metadata["level"]),
+			asString(event.Metadata["type"]),
+			"info",
+		)
+		message := firstNonEmpty(
+			asString(event.Metadata["message"]),
+			asString(event.Metadata["error"]),
+			asString(event.Metadata["messageTemplate"]),
+			"-",
+		)
+		method := asString(event.Metadata["trigger"])
+		if strings.EqualFold(method, "http") {
+			method = asString(event.Workers["eventType"])
+		}
+		status := asString(event.Metadata["statusCode"])
+		urlValue := asString(event.Metadata["url"])
+		outcome := asString(event.Workers["outcome"])
+		requestID := firstNonEmpty(asString(event.Workers["requestId"]), asString(event.Metadata["requestId"]))
+
+		line := fmt.Sprintf("%s\t%s\t%s", when, strings.ToUpper(level), message)
+		if method != "" || urlValue != "" || status != "" {
+			line += fmt.Sprintf("\trequest=%s %s status=%s", emptyDash(method), emptyDash(urlValue), emptyDash(status))
+		}
+		if outcome != "" {
+			line += fmt.Sprintf("\toutcome=%s", outcome)
+		}
+		if requestID != "" {
+			line += fmt.Sprintf("\trequest_id=%s", requestID)
+		}
+		fmt.Println(line)
+	}
+}
+
+func printWorkerInvocations(invocations map[string][]telemetryEvent) {
+	if len(invocations) == 0 {
+		fmt.Println("No recent persisted logs found.")
+		return
+	}
+
+	keys := make([]string, 0, len(invocations))
+	for key := range invocations {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		events := invocations[key]
+		if len(events) == 0 {
+			continue
+		}
+
+		primary := events[0]
+		when := formatEventTime(primary)
+		status := asString(primary.Metadata["statusCode"])
+		urlValue := asString(primary.Metadata["url"])
+		outcome := asString(primary.Workers["outcome"])
+		requestID := firstNonEmpty(asString(primary.Workers["requestId"]), asString(primary.Metadata["requestId"]), key)
+
+		fmt.Printf("%s\tinvocation=%s\tstatus=%s\toutcome=%s\turl=%s\tevents=%d\n",
+			when,
+			requestID,
+			emptyDash(status),
+			emptyDash(outcome),
+			emptyDash(urlValue),
+			len(events),
+		)
+
+		for _, event := range events {
+			level := firstNonEmpty(
+				asString(event.Metadata["level"]),
+				asString(event.Metadata["type"]),
+				"info",
+			)
+			message := firstNonEmpty(
+				asString(event.Metadata["message"]),
+				asString(event.Metadata["error"]),
+				asString(event.Metadata["messageTemplate"]),
+				"-",
+			)
+			fmt.Printf("  %s %s\n", strings.ToUpper(level), message)
+		}
 	}
 }
 
@@ -1327,4 +2276,93 @@ func shellSafeFilter(value string) string {
 		return "\"\""
 	}
 	return fmt.Sprintf("%q", value)
+}
+
+func formatEventTime(event telemetryEvent) string {
+	if event.Timestamp > 0 {
+		return time.UnixMilli(event.Timestamp).Format(time.RFC3339)
+	}
+	if start := asInt64(event.Metadata["startTime"]); start > 0 {
+		return time.UnixMilli(start).Format(time.RFC3339)
+	}
+	if end := asInt64(event.Metadata["endTime"]); end > 0 {
+		return time.UnixMilli(end).Format(time.RFC3339)
+	}
+	return "-"
+}
+
+func asString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case float64:
+		return fmt.Sprintf("%.0f", v)
+	case float32:
+		return fmt.Sprintf("%.0f", v)
+	case int:
+		return fmt.Sprintf("%d", v)
+	case int64:
+		return fmt.Sprintf("%d", v)
+	case json.Number:
+		return v.String()
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	default:
+		return ""
+	}
+}
+
+func asInt64(value any) int64 {
+	switch v := value.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case json.Number:
+		parsed, err := v.Int64()
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func emptyDash(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
+}
+
+func redactDestinationConf(value string) string {
+	redacted := value
+	for _, secretKey := range []string{"secret-access-key", "access-key-id"} {
+		needle := secretKey + "="
+		index := strings.Index(redacted, needle)
+		if index == -1 {
+			continue
+		}
+		start := index + len(needle)
+		end := strings.Index(redacted[start:], "&")
+		if end == -1 {
+			redacted = redacted[:start] + "REDACTED"
+			continue
+		}
+		redacted = redacted[:start] + "REDACTED" + redacted[start+end:]
+	}
+	return redacted
 }

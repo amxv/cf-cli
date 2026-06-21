@@ -9,10 +9,14 @@ A CLI tool written in Go using Cobra to update or insert **A records** (or other
 - Update existing DNS records
 - Insert (upsert) DNS records if not found
 - Mint new zone-scoped DNS API tokens through the Cloudflare API
+- List deployed Workers for the current account
+- View recent persisted Worker logs from Cloudflare observability
+- Enable persisted Worker logs and invocation logs from the CLI
+- Create account-level Workers Logpush jobs that export to R2
 - Add optional comment to records
 - Supports TTL and Cloudflare proxy settings
 - Supports record types beyond `A`
-- Reads Cloudflare API token, bootstrap token, zone ID, account ID, and default domain from environment variables or the macOS keychain
+- Reads Cloudflare API token, bootstrap token, zone ID, account ID, default domain, and optional R2 log sink credentials from environment variables or the macOS keychain
 
 ---
 
@@ -73,6 +77,12 @@ cf mx [key] [priority] [mail-server] [comment]
 cf list [type] [key]
 cf get [type] [key]
 cf delete [type] [key] [--value value] [--all]
+cf workers:list [filter]
+cf worker:logs [worker] [--since 1h] [--limit 20] [--view events|invocations] [--search text]
+cf worker logs [worker] [--since 10m] [--limit 50] [--view events|invocations] [--search text]
+cf worker logs recent [worker] [--since 10m] [--limit 50]
+cf worker logs enable [worker] [--persist] [--invocations] [--sample 1]
+cf worker logs sink setup-r2 [worker]
 cf doctor
 ```
 
@@ -107,6 +117,10 @@ cf mx @ 10 mx1.mailhost.com
 cf list TXT
 cf get CNAME www
 cf delete TXT verify --value abc123
+cf workers:list
+cf worker:logs api-worker --since 2h --limit 25
+cf worker logs api-worker --since 10m --limit 50
+cf worker logs enable api-worker
 cf doctor
 ```
 
@@ -174,6 +188,102 @@ cf set CNAME www target.example.net
 cf list
 cf delete TXT old-verification --all
 ```
+
+## Workers Logs
+
+This CLI reads the same persisted Workers observability dataset that powers Cloudflare's dashboard-style recent logs view. It is not a real-time tail. For the common agent workflow of "show me the last 5-10 minutes of logs", use persisted observability first instead of forcing everything through R2.
+
+List deployed Workers:
+
+```bash
+cf workers:list
+cf workers:list upload
+```
+
+View recent persisted logs for one Worker:
+
+```bash
+cf worker logs my-worker
+cf worker logs my-worker --since 10m --limit 50
+cf worker logs recent my-worker --view invocations
+cf worker logs recent my-worker --search timeout
+```
+
+Enable persisted logs and invocation logs for a Worker:
+
+```bash
+cf worker logs enable my-worker
+cf worker logs enable my-worker --logpush
+```
+
+If your active token is DNS-only, mint and activate a Workers-readable account token:
+
+```bash
+cf mint:token "ama workers logs" --preset workers-logs-read --store --activate
+```
+
+If you also want to enable logs or create Logpush jobs, mint and activate the admin preset instead:
+
+```bash
+cf mint:token "ama workers logs admin" --preset workers-logs-admin --store --activate
+```
+
+The `workers-logs-read` preset includes:
+
+- `Workers Scripts Read`
+- `Workers Observability Read`
+- `Workers Observability Telemetry Write`
+
+The `workers-logs-admin` preset adds:
+
+- `Workers Scripts Write`
+- `Workers Observability Write`
+- `Logs Write`
+
+## Workers Logpush To R2
+
+Use this when you want exported trace-event logs in R2 in addition to the built-in recent-log query flow.
+
+Create or verify an account-level `workers_trace_events` Logpush job to R2 and enable the target Worker's `logpush` flag:
+
+```bash
+cf worker logs sink setup-r2 my-worker
+```
+
+You can also provide the R2 sink details explicitly:
+
+```bash
+cf worker logs sink setup-r2 my-worker \
+  --bucket my-log-bucket \
+  --path workers-trace-events \
+  --r2-access-key-id "$CF_R2_ACCESS_KEY_ID" \
+  --r2-secret-access-key "$CF_R2_SECRET_ACCESS_KEY"
+```
+
+The CLI resolves the R2 sink details from these environment variables or matching macOS keychain entries:
+
+```bash
+export CF_R2_LOG_BUCKET=my-log-bucket
+export CF_R2_ACCESS_KEY_ID=...
+export CF_R2_SECRET_ACCESS_KEY=...
+export CF_WORKERS_LOGPUSH_PATH=workers-trace-events
+```
+
+Expected keychain services for the current profile:
+
+```bash
+security add-generic-password -U -a 'cloudflare-dns-cli' -s 'ama cloudflare r2 log bucket' -w 'my-log-bucket' ~/Library/Keychains/login.keychain-db
+security add-generic-password -U -a 'cloudflare-dns-cli' -s 'ama cloudflare r2 access key id' -w 'your_r2_access_key_id' ~/Library/Keychains/login.keychain-db
+security add-generic-password -U -a 'cloudflare-dns-cli' -s 'ama cloudflare r2 secret access key' -w 'your_r2_secret_access_key' ~/Library/Keychains/login.keychain-db
+security add-generic-password -U -a 'cloudflare-dns-cli' -s 'ama cloudflare workers logpush path' -w 'workers-trace-events' ~/Library/Keychains/login.keychain-db
+```
+
+Notes:
+
+- `cf worker logs ...` and `cf worker:logs ...` both use the persisted Workers observability query API, which is the best path for "show me the last 5-10 minutes".
+- `cf worker logs enable ...` uses the Worker script settings API and requires broader Worker permissions than the read-only recent-log flow.
+- `cf worker logs sink setup-r2 ...` uses the account-level Logpush API and requires `Logs Write` plus valid R2 credentials.
+- These Worker commands are account-level, so they use `CF_ACCOUNT_ID` or the configured account ID keychain entry in addition to the API token.
 
 ## 🔁 Mint A New DNS Token
 
