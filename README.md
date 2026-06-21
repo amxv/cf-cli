@@ -66,6 +66,13 @@ cf mint:dns-token [name]
 ```bash
 cf set [type] [key] [value] [comment]
 cf a [key] [ipv4] [comment]
+cf aaaa [key] [ipv6] [comment]
+cf cname [key] [target] [comment]
+cf txt [key] [text] [comment]
+cf mx [key] [priority] [mail-server] [comment]
+cf list [type] [key]
+cf get [type] [key]
+cf delete [type] [key] [--value value] [--all]
 cf doctor
 ```
 
@@ -93,7 +100,13 @@ Agent-friendly shortcuts:
 
 ```bash
 cf a @ 123.123.123.123
+cf aaaa @ 2001:db8::10
 cf set CNAME www app.example.net
+cf txt verify abc123
+cf mx @ 10 mx1.mailhost.com
+cf list TXT
+cf get CNAME www
+cf delete TXT verify --value abc123
 cf doctor
 ```
 
@@ -113,6 +126,7 @@ cf doctor
 | `--proxied`  | true    | Whether the record should be proxied         |
 | `--ttl`      | 3600    | Time To Live for the DNS record (in seconds) |
 | `--upsert`   | false   | Create the record if it doesn't exist        |
+| `--priority` | `0`     | Priority for MX records                      |
 
 ---
 
@@ -157,6 +171,8 @@ cf doctor
 cf mint:dns-token
 cf a @ 123.123.123.123
 cf set CNAME www target.example.net
+cf list
+cf delete TXT old-verification --all
 ```
 
 ## 🔁 Mint A New DNS Token

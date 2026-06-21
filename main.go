@@ -35,6 +35,7 @@ var ttl int16 = 3600
 var upsert bool
 var recordValue string
 var deleteAll bool
+var priority uint16
 
 type dnsRecord struct {
 	ID      string `json:"id"`
@@ -123,6 +124,7 @@ func main() {
 	updateCmd.Flags().BoolVar(&proxied, "proxied", true, "Whether to enable Cloudflare proxying")
 	updateCmd.Flags().Int16Var(&ttl, "ttl", 3600, "Time to live for the DNS record in seconds")
 	updateCmd.Flags().BoolVar(&upsert, "upsert", false, "Create the DNS record if it does not exist")
+	updateCmd.Flags().Uint16Var(&priority, "priority", 0, "Priority for MX records")
 	updateCmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
 
 	setCmd := &cobra.Command{
@@ -151,6 +153,7 @@ func main() {
 	setCmd.Flags().BoolVar(&proxied, "proxied", true, "Whether to enable Cloudflare proxying")
 	setCmd.Flags().Int16Var(&ttl, "ttl", 3600, "Time to live for the DNS record in seconds")
 	setCmd.Flags().BoolVar(&upsert, "upsert", true, "Create the DNS record if it does not exist")
+	setCmd.Flags().Uint16Var(&priority, "priority", 0, "Priority for MX records")
 	setCmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
 
 	listCmd := &cobra.Command{
@@ -243,7 +246,39 @@ func main() {
 	aaaaCmd := makeRecordShortcutCommand("aaaa", "AAAA", "ipv6", "Shortcut for setting an AAAA record on the default domain")
 	cnameCmd := makeRecordShortcutCommand("cname", "CNAME", "target", "Shortcut for setting a CNAME record on the default domain")
 	txtCmd := makeRecordShortcutCommand("txt", "TXT", "text", "Shortcut for setting a TXT record on the default domain")
-	mxCmd := makeRecordShortcutCommand("mx", "MX", "mail-server", "Shortcut for setting an MX record on the default domain")
+	mxCmd := &cobra.Command{
+		Use:   "mx [key] [priority] [mail-server] [comment (optional)]",
+		Short: "Shortcut for setting an MX record on the default domain",
+		Args:  cobra.MinimumNArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedDomain, err := resolveDomain()
+			if err != nil {
+				return err
+			}
+			resolvedToken, err := resolveAPIToken()
+			if err != nil {
+				return err
+			}
+
+			parsedPriority, err := parsePriority(args[1])
+			if err != nil {
+				return err
+			}
+			priority = parsedPriority
+
+			comment := ""
+			if len(args) > 3 {
+				comment = args[3]
+			}
+
+			return updateDNSRecord(resolvedToken, resolvedDomain, "MX", args[0], args[2], comment)
+		},
+	}
+	mxCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
+	mxCmd.Flags().BoolVar(&proxied, "proxied", true, "Whether to enable Cloudflare proxying")
+	mxCmd.Flags().Int16Var(&ttl, "ttl", 3600, "Time to live for the DNS record in seconds")
+	mxCmd.Flags().BoolVar(&upsert, "upsert", true, "Create the DNS record if it does not exist")
+	mxCmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
 
 	doctorCmd := &cobra.Command{
 		Use:   "doctor",
@@ -504,13 +539,9 @@ func mintDNSToken(bootstrap, resolvedZoneID, tokenName, tokenExpiry string) (*to
 }
 
 func insertRecord(apiToken, recordType, recordName, value, comment, zoneID string, client *http.Client) error {
-	payload := map[string]any{
-		"type":    strings.ToUpper(recordType),
-		"name":    recordName,
-		"content": value,
-		"ttl":     ttl,
-		"proxied": proxied,
-		"comment": comment,
+	payload, err := makeRecordPayload(recordType, recordName, value, comment)
+	if err != nil {
+		return err
 	}
 
 	req, err := newJSONRequest("POST", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records", zoneID), apiToken, payload)
@@ -528,13 +559,9 @@ func insertRecord(apiToken, recordType, recordName, value, comment, zoneID strin
 }
 
 func updateRecord(apiToken, recordType, recordName, value, comment, zoneID, recordID string, client *http.Client) error {
-	payload := map[string]any{
-		"type":    strings.ToUpper(recordType),
-		"name":    recordName,
-		"content": value,
-		"ttl":     ttl,
-		"proxied": proxied,
-		"comment": comment,
+	payload, err := makeRecordPayload(recordType, recordName, value, comment)
+	if err != nil {
+		return err
 	}
 
 	req, err := newJSONRequest("PUT", fmt.Sprintf("https://api.cloudflare.com/client/v4/zones/%s/dns_records/%s", zoneID, recordID), apiToken, payload)
@@ -549,6 +576,26 @@ func updateRecord(apiToken, recordType, recordName, value, comment, zoneID, reco
 	defer resp.Body.Close()
 
 	return checkAPIResponse(resp)
+}
+
+func makeRecordPayload(recordType, recordName, value, comment string) (map[string]any, error) {
+	upperType := strings.ToUpper(recordType)
+	payload := map[string]any{
+		"type":    upperType,
+		"name":    recordName,
+		"content": value,
+		"ttl":     ttl,
+		"proxied": proxied,
+		"comment": comment,
+	}
+	if upperType == "MX" {
+		if priority == 0 {
+			return nil, errors.New("MX records require --priority or the mx shortcut syntax: cf mx <key> <priority> <mail-server>")
+		}
+		payload["priority"] = priority
+	}
+
+	return payload, nil
 }
 
 func newJSONRequest(method, requestURL, token string, payload any) (*http.Request, error) {
@@ -896,6 +943,15 @@ func makeRecordShortcutCommand(name, recordType, valueLabel, short string) *cobr
 	cmd.Flags().BoolVar(&proxied, "proxied", true, "Whether to enable Cloudflare proxying")
 	cmd.Flags().Int16Var(&ttl, "ttl", 3600, "Time to live for the DNS record in seconds")
 	cmd.Flags().BoolVar(&upsert, "upsert", true, "Create the DNS record if it does not exist")
+	cmd.Flags().Uint16Var(&priority, "priority", 0, "Priority for MX records")
 	cmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
 	return cmd
+}
+
+func parsePriority(value string) (uint16, error) {
+	var parsed uint16
+	if _, err := fmt.Sscanf(value, "%d", &parsed); err != nil {
+		return 0, fmt.Errorf("invalid MX priority %q", value)
+	}
+	return parsed, nil
 }
