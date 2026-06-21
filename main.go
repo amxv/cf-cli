@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -36,6 +37,13 @@ var upsert bool
 var recordValue string
 var deleteAll bool
 var priority uint16
+var tokenOwner string
+var tokenScope string
+var tokenResourceID string
+var tokenPreset string
+var tokenStoreService string
+var activateMintedToken bool
+var tokenPermissions []string
 
 type dnsRecord struct {
 	ID      string `json:"id"`
@@ -59,7 +67,7 @@ type tokenPermissionGroup struct {
 type tokenPolicy struct {
 	Effect           string                 `json:"effect"`
 	PermissionGroups []tokenPermissionGroup `json:"permission_groups"`
-	Resources        map[string]string      `json:"resources"`
+	Resources        map[string]any         `json:"resources"`
 }
 
 type tokenCreateResult struct {
@@ -67,6 +75,13 @@ type tokenCreateResult struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Value  string `json:"value"`
+}
+
+type permissionGroup struct {
+	ID       string   `json:"id"`
+	Name     string   `json:"name"`
+	Category string   `json:"category"`
+	Scopes   []string `json:"scopes"`
 }
 
 type apiMessage struct {
@@ -79,6 +94,12 @@ type apiEnvelope[T any] struct {
 	Errors   []apiMessage `json:"errors"`
 	Messages []apiMessage `json:"messages"`
 	Result   T            `json:"result"`
+}
+
+type genericMintRequest struct {
+	Owner     string
+	AccountID string
+	Payload   map[string]any
 }
 
 func main() {
@@ -342,6 +363,93 @@ func main() {
 	mintCmd.Flags().StringVar(&expiresOn, "expires-on", "", "Optional RFC3339 expiry time for the minted token")
 	mintCmd.Flags().BoolVar(&storeMintedToken, "store", true, "Store the minted API token in the macOS keychain")
 
+	mintGenericCmd := &cobra.Command{
+		Use:   "mint:token [name]",
+		Short: "Mint a generic Cloudflare token by permission name and scope",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			tokenName := fmt.Sprintf("%s cloudflare token %s", profile, time.Now().UTC().Format("20060102-150405"))
+			if len(args) == 1 && strings.TrimSpace(args[0]) != "" {
+				tokenName = strings.TrimSpace(args[0])
+			}
+
+			bootstrap, err := resolveBootstrapToken()
+			if err != nil {
+				return err
+			}
+
+			mintReq, err := buildMintRequest(tokenName)
+			if err != nil {
+				return err
+			}
+
+			token, err := mintGenericToken(bootstrap, mintReq)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("✅ Minted %s token %q (%s)\n", mintReq.Owner, token.Name, token.ID)
+
+			service := tokenStoreService
+			if service == "" {
+				service = defaultNamedTokenServiceName(tokenName)
+			}
+			if storeMintedToken {
+				if err := writeSecretToKeychain(service, token.Value); err != nil {
+					return fmt.Errorf("minted token, but failed to store it in keychain: %w", err)
+				}
+				fmt.Printf("✅ Stored minted token in keychain service %q\n", service)
+			}
+			if activateMintedToken {
+				if err := writeSecretToKeychain(defaultAPIServiceName(), token.Value); err != nil {
+					return fmt.Errorf("minted token, but failed to activate it: %w", err)
+				}
+				fmt.Printf("✅ Activated minted token in keychain service %q\n", defaultAPIServiceName())
+			}
+			if !storeMintedToken && !activateMintedToken {
+				fmt.Printf("Use it immediately with:\nCF_API_TOKEN=%s cf doctor\n", token.Value)
+			}
+			return nil
+		},
+	}
+	mintGenericCmd.Flags().StringVar(&bootstrapToken, "bootstrap-token", "", "Cloudflare bootstrap token")
+	mintGenericCmd.Flags().StringVar(&accountID, "account-id", "", "Cloudflare account ID")
+	mintGenericCmd.Flags().StringVar(&zoneID, "zone-id", "", "Cloudflare zone ID")
+	mintGenericCmd.Flags().StringVar(&expiresOn, "expires-on", "", "Optional RFC3339 expiry time for the minted token")
+	mintGenericCmd.Flags().StringVar(&tokenOwner, "owner", "user", "Token owner type: user or account")
+	mintGenericCmd.Flags().StringVar(&tokenScope, "scope", "", "Resource scope: zone, account, all-zones-in-account, all-zones, or all-accounts")
+	mintGenericCmd.Flags().StringVar(&tokenResourceID, "resource-id", "", "Explicit resource ID override for the chosen scope")
+	mintGenericCmd.Flags().StringVar(&tokenPreset, "preset", "", "Preset: dns-edit, dns-read, zone-read, zone-write")
+	mintGenericCmd.Flags().StringSliceVar(&tokenPermissions, "permission", nil, "Permission group names, repeatable")
+	mintGenericCmd.Flags().StringVar(&tokenStoreService, "store-service", "", "Keychain service name for storing the minted token")
+	mintGenericCmd.Flags().BoolVar(&storeMintedToken, "store", true, "Store the minted token in the macOS keychain")
+	mintGenericCmd.Flags().BoolVar(&activateMintedToken, "activate", false, "Also store the minted token as the active API token for this profile")
+
+	permsCmd := &cobra.Command{
+		Use:   "permissions:list [filter]",
+		Short: "List Cloudflare token permission groups available to the bootstrap token",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			bootstrap, err := resolveBootstrapToken()
+			if err != nil {
+				return err
+			}
+
+			filter := ""
+			if len(args) == 1 {
+				filter = args[0]
+			}
+
+			perms, err := listPermissionGroups(bootstrap)
+			if err != nil {
+				return err
+			}
+			printPermissionGroups(perms, filter)
+			return nil
+		},
+	}
+	permsCmd.Flags().StringVar(&bootstrapToken, "bootstrap-token", "", "Cloudflare bootstrap token")
+
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(setCmd)
 	rootCmd.AddCommand(listCmd)
@@ -353,6 +461,8 @@ func main() {
 	rootCmd.AddCommand(txtCmd)
 	rootCmd.AddCommand(mxCmd)
 	rootCmd.AddCommand(mintCmd)
+	rootCmd.AddCommand(mintGenericCmd)
+	rootCmd.AddCommand(permsCmd)
 	rootCmd.AddCommand(doctorCmd)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -487,55 +597,29 @@ func deleteDNSRecords(apiToken, domain, recordType, key, content string, all boo
 }
 
 func mintDNSToken(bootstrap, resolvedZoneID, tokenName, tokenExpiry string) (*tokenCreateResult, error) {
-	client := &http.Client{}
-
-	payload := map[string]any{
-		"name": tokenName,
-		"policies": []tokenPolicy{
-			{
-				Effect: "allow",
-				PermissionGroups: []tokenPermissionGroup{
-					{ID: "c8fed203ed3043cba015a93ad1616f1f", Name: "Zone Read"},
-					{ID: "4755a26eedb94da69e1066d98aa820be", Name: "DNS Write"},
-				},
-				Resources: map[string]string{
-					fmt.Sprintf("com.cloudflare.api.account.zone.%s", resolvedZoneID): "*",
+	mintReq := genericMintRequest{
+		Owner: "user",
+		Payload: map[string]any{
+			"name": tokenName,
+			"policies": []tokenPolicy{
+				{
+					Effect: "allow",
+					PermissionGroups: []tokenPermissionGroup{
+						{ID: "c8fed203ed3043cba015a93ad1616f1f", Name: "Zone Read"},
+						{ID: "4755a26eedb94da69e1066d98aa820be", Name: "DNS Write"},
+					},
+					Resources: map[string]any{
+						fmt.Sprintf("com.cloudflare.api.account.zone.%s", resolvedZoneID): "*",
+					},
 				},
 			},
 		},
 	}
 	if tokenExpiry != "" {
-		payload["expires_on"] = tokenExpiry
+		mintReq.Payload["expires_on"] = tokenExpiry
 	}
 
-	req, err := newJSONRequest("POST", "https://api.cloudflare.com/client/v4/user/tokens", bootstrap, payload)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var envelope apiEnvelope[tokenCreateResult]
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, err
-	}
-	if !envelope.Success {
-		return nil, apiErrors(envelope.Errors)
-	}
-	if envelope.Result.Value == "" {
-		return nil, errors.New("cloudflare did not return a token value")
-	}
-
-	return &envelope.Result, nil
+	return mintGenericToken(bootstrap, mintReq)
 }
 
 func insertRecord(apiToken, recordType, recordName, value, comment, zoneID string, client *http.Client) error {
@@ -626,6 +710,230 @@ func fetchZoneID(client *http.Client, apiToken, domain string) (string, error) {
 		return "", fmt.Errorf("zone not found for %s", domain)
 	}
 	return zoneResp.Result[0].ID, nil
+}
+
+func mintGenericToken(bootstrap string, req genericMintRequest) (*tokenCreateResult, error) {
+	client := &http.Client{}
+
+	endpoint := "https://api.cloudflare.com/client/v4/user/tokens"
+	if req.Owner == "account" {
+		if req.AccountID == "" {
+			return nil, errors.New("account-owned tokens require an account ID")
+		}
+		endpoint = fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/tokens", req.AccountID)
+	}
+
+	httpReq, err := newJSONRequest("POST", endpoint, bootstrap, req.Payload)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var envelope apiEnvelope[tokenCreateResult]
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, err
+	}
+	if !envelope.Success {
+		return nil, apiErrors(envelope.Errors)
+	}
+	if envelope.Result.Value == "" {
+		return nil, errors.New("cloudflare did not return a token value")
+	}
+
+	return &envelope.Result, nil
+}
+
+func buildMintRequest(tokenName string) (genericMintRequest, error) {
+	owner := strings.ToLower(strings.TrimSpace(tokenOwner))
+	if owner == "" {
+		owner = "user"
+	}
+	if owner != "user" && owner != "account" {
+		return genericMintRequest{}, fmt.Errorf("unsupported owner %q; use user or account", tokenOwner)
+	}
+
+	presetPermissions, presetScope, err := permissionsFromPreset(tokenPreset)
+	if err != nil {
+		return genericMintRequest{}, err
+	}
+
+	scope := strings.TrimSpace(tokenScope)
+	if scope == "" {
+		scope = presetScope
+	}
+	if scope == "" {
+		return genericMintRequest{}, errors.New("token scope is required; use --scope or a --preset")
+	}
+
+	permissionNames := append([]string{}, tokenPermissions...)
+	if len(permissionNames) == 0 {
+		permissionNames = presetPermissions
+	}
+	if len(permissionNames) == 0 {
+		return genericMintRequest{}, errors.New("at least one --permission or a --preset is required")
+	}
+
+	bootstrap, err := resolveBootstrapToken()
+	if err != nil {
+		return genericMintRequest{}, err
+	}
+	groups, err := resolvePermissionGroupsByName(bootstrap, permissionNames)
+	if err != nil {
+		return genericMintRequest{}, err
+	}
+
+	resolvedAccountID := ""
+	if owner == "account" || scope == "account" || scope == "all-zones-in-account" {
+		resolvedAccountID, err = resolveAccountID()
+		if err != nil {
+			return genericMintRequest{}, err
+		}
+	}
+
+	resourceID := strings.TrimSpace(tokenResourceID)
+	if resourceID == "" && scope == "zone" {
+		resourceID, err = resolveZoneID()
+		if err != nil {
+			return genericMintRequest{}, err
+		}
+	}
+	if resourceID == "" && scope == "account" {
+		resourceID = resolvedAccountID
+	}
+
+	resources, err := buildResources(scope, resourceID, resolvedAccountID)
+	if err != nil {
+		return genericMintRequest{}, err
+	}
+
+	payload := map[string]any{
+		"name": tokenName,
+		"policies": []tokenPolicy{
+			{
+				Effect:           "allow",
+				PermissionGroups: groups,
+				Resources:        resources,
+			},
+		},
+	}
+	if expiresOn != "" {
+		payload["expires_on"] = expiresOn
+	}
+
+	return genericMintRequest{
+		Owner:     owner,
+		AccountID: resolvedAccountID,
+		Payload:   payload,
+	}, nil
+}
+
+func permissionsFromPreset(preset string) ([]string, string, error) {
+	switch strings.ToLower(strings.TrimSpace(preset)) {
+	case "":
+		return nil, "", nil
+	case "dns-edit":
+		return []string{"Zone Read", "DNS Write"}, "zone", nil
+	case "dns-read":
+		return []string{"Zone Read", "DNS Read"}, "zone", nil
+	case "zone-read":
+		return []string{"Zone Read"}, "zone", nil
+	case "zone-write":
+		return []string{"Zone Write"}, "zone", nil
+	default:
+		return nil, "", fmt.Errorf("unknown preset %q", preset)
+	}
+}
+
+func listPermissionGroups(bootstrap string) ([]permissionGroup, error) {
+	client := &http.Client{}
+	resp, err := getJSON[[]permissionGroup](client, "https://api.cloudflare.com/client/v4/user/tokens/permission_groups", bootstrap)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Result, nil
+}
+
+func resolvePermissionGroupsByName(bootstrap string, names []string) ([]tokenPermissionGroup, error) {
+	available, err := listPermissionGroups(bootstrap)
+	if err != nil {
+		return nil, err
+	}
+
+	byName := make(map[string]permissionGroup, len(available))
+	for _, group := range available {
+		byName[strings.ToLower(group.Name)] = group
+	}
+
+	resolved := make([]tokenPermissionGroup, 0, len(names))
+	for _, name := range names {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+
+		if group, ok := byName[strings.ToLower(trimmed)]; ok {
+			resolved = append(resolved, tokenPermissionGroup{ID: group.ID, Name: group.Name})
+			continue
+		}
+		if len(trimmed) == 32 {
+			resolved = append(resolved, tokenPermissionGroup{ID: trimmed, Name: trimmed})
+			continue
+		}
+		return nil, fmt.Errorf("permission group %q not found; use `cf permissions:list %s` to discover valid names", trimmed, shellSafeFilter(trimmed))
+	}
+
+	if len(resolved) == 0 {
+		return nil, errors.New("no valid permission groups resolved")
+	}
+	return resolved, nil
+}
+
+func buildResources(scope, resourceID, accountID string) (map[string]any, error) {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "zone":
+		if resourceID == "" {
+			return nil, errors.New("zone scope requires a zone ID")
+		}
+		return map[string]any{
+			fmt.Sprintf("com.cloudflare.api.account.zone.%s", resourceID): "*",
+		}, nil
+	case "account":
+		if resourceID == "" {
+			return nil, errors.New("account scope requires an account ID")
+		}
+		return map[string]any{
+			fmt.Sprintf("com.cloudflare.api.account.%s", resourceID): "*",
+		}, nil
+	case "all-zones-in-account":
+		if accountID == "" {
+			return nil, errors.New("all-zones-in-account scope requires an account ID")
+		}
+		return map[string]any{
+			fmt.Sprintf("com.cloudflare.api.account.%s", accountID): map[string]any{
+				"com.cloudflare.api.account.zone.*": "*",
+			},
+		}, nil
+	case "all-zones":
+		return map[string]any{
+			"com.cloudflare.api.account.zone.*": "*",
+		}, nil
+	case "all-accounts":
+		return map[string]any{
+			"com.cloudflare.api.account.*": "*",
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported scope %q; use zone, account, all-zones-in-account, all-zones, or all-accounts", scope)
+	}
 }
 
 func getJSON[T any](client *http.Client, requestURL, apiToken string) (*apiEnvelope[T], error) {
@@ -833,6 +1141,10 @@ func defaultDomainServiceName() string {
 	return fmt.Sprintf("%s cloudflare domain", profile)
 }
 
+func defaultNamedTokenServiceName(tokenName string) string {
+	return fmt.Sprintf("%s cloudflare token %s", profile, slugify(tokenName))
+}
+
 func chooseService(explicit, fallback string) string {
 	if explicit != "" {
 		return explicit
@@ -891,6 +1203,32 @@ func reportSecretResolution(label string, resolver func() (string, error)) {
 		redacted = value[:8] + "..." + value[len(value)-4:]
 	}
 	fmt.Printf("✅ %s: %s\n", label, redacted)
+}
+
+func printPermissionGroups(groups []permissionGroup, filter string) {
+	filter = strings.ToLower(strings.TrimSpace(filter))
+	filtered := make([]permissionGroup, 0, len(groups))
+	for _, group := range groups {
+		if filter == "" ||
+			strings.Contains(strings.ToLower(group.Name), filter) ||
+			strings.Contains(strings.ToLower(group.Category), filter) ||
+			strings.Contains(strings.ToLower(strings.Join(group.Scopes, " ")), filter) {
+			filtered = append(filtered, group)
+		}
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].Name < filtered[j].Name
+	})
+
+	if len(filtered) == 0 {
+		fmt.Println("No permission groups found.")
+		return
+	}
+
+	for _, group := range filtered {
+		fmt.Printf("%s\t%s\tscopes=%s\tid=%s\n", group.Name, group.Category, strings.Join(group.Scopes, ","), group.ID)
+	}
 }
 
 func printDNSRecords(records []dnsRecord) {
@@ -954,4 +1292,39 @@ func parsePriority(value string) (uint16, error) {
 		return 0, fmt.Errorf("invalid MX priority %q", value)
 	}
 	return parsed, nil
+}
+
+func slugify(value string) string {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	if lower == "" {
+		return "token"
+	}
+
+	var b strings.Builder
+	lastDash := false
+	for _, r := range lower {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+
+	result := strings.Trim(b.String(), "-")
+	if result == "" {
+		return "token"
+	}
+	return result
+}
+
+func shellSafeFilter(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "\"\""
+	}
+	return fmt.Sprintf("%q", value)
 }
