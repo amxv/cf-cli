@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -657,6 +658,7 @@ Notes
 			if err != nil {
 				return err
 			}
+			fmt.Printf("Checking current Wrangler auth with %q...\n", resolvedWranglerCmd)
 			info, err := wranglerWhoami(resolvedWranglerCmd)
 			if err != nil {
 				return err
@@ -665,6 +667,7 @@ Notes
 			if accountName == "" {
 				accountName = info.AccountName
 			}
+			fmt.Printf("Saving Wrangler auth snapshot for %s...\n", accountName)
 			configHash, err := saveWranglerAccountConfig(info.AccountID)
 			if err != nil {
 				return err
@@ -2964,15 +2967,23 @@ func restoreWranglerAccountConfig(accountID string) error {
 
 func resolveWranglerCommand() string {
 	if strings.TrimSpace(wranglerCmd) != "" {
-		return strings.TrimSpace(wranglerCmd)
+		return normalizeWranglerCommand(strings.TrimSpace(wranglerCmd))
 	}
 	if env := os.Getenv("CF_WRANGLER_CMD"); env != "" {
-		return strings.TrimSpace(env)
+		return normalizeWranglerCommand(strings.TrimSpace(env))
 	}
 	if env := os.Getenv("CLOUDFLARE_WRANGLER_CMD"); env != "" {
-		return strings.TrimSpace(env)
+		return normalizeWranglerCommand(strings.TrimSpace(env))
 	}
 	return ""
+}
+
+func normalizeWranglerCommand(command string) string {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "npx wrangler" {
+		return "npx --yes wrangler"
+	}
+	return trimmed
 }
 
 func tryWranglerCommand(command string) bool {
@@ -2987,7 +2998,7 @@ func tryWranglerCommand(command string) bool {
 }
 
 func detectWranglerCommand() string {
-	candidates := []string{"wrangler", "npx wrangler"}
+	candidates := []string{"wrangler", "npx --yes wrangler"}
 	for _, candidate := range candidates {
 		if tryWranglerCommand(candidate) {
 			return candidate
@@ -3006,7 +3017,12 @@ func ensureWranglerCommand(db *wranglerAccountsDB) (string, error) {
 		return resolved, nil
 	}
 	if strings.TrimSpace(db.WranglerCmd) != "" && tryWranglerCommand(db.WranglerCmd) {
-		return db.WranglerCmd, nil
+		normalized := normalizeWranglerCommand(db.WranglerCmd)
+		if normalized != db.WranglerCmd {
+			db.WranglerCmd = normalized
+			_ = saveWranglerAccountsDB(db)
+		}
+		return normalized, nil
 	}
 	detected := detectWranglerCommand()
 	if detected == "" {
@@ -3018,20 +3034,34 @@ func ensureWranglerCommand(db *wranglerAccountsDB) (string, error) {
 }
 
 func runWranglerCommand(command string, args ...string) ([]byte, error) {
+	return runWranglerCommandWithTimeout(0, command, args...)
+}
+
+func runWranglerCommandWithTimeout(timeout time.Duration, command string, args ...string) ([]byte, error) {
 	parts := strings.Fields(command)
 	if len(parts) == 0 {
 		return nil, errors.New("wrangler command is empty")
 	}
-	cmd := exec.Command(parts[0], append(parts[1:], args...)...)
+	var cmd *exec.Cmd
+	if timeout > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		cmd = exec.CommandContext(ctx, parts[0], append(parts[1:], args...)...)
+	} else {
+		cmd = exec.Command(parts[0], append(parts[1:], args...)...)
+	}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if timeout > 0 && errors.Is(err, context.DeadlineExceeded) {
+			return output, fmt.Errorf("%s %s timed out after %s; run `%s whoami` manually to confirm Wrangler is responsive, or set CF_WRANGLER_CMD to a working command", command, strings.Join(args, " "), timeout, command)
+		}
 		return output, fmt.Errorf("failed to run %s %s: %w\nOutput: %s", command, strings.Join(args, " "), err, string(output))
 	}
 	return output, nil
 }
 
 func wranglerWhoami(command string) (*wranglerWhoamiInfo, error) {
-	output, err := runWranglerCommand(command, "whoami")
+	output, err := runWranglerCommandWithTimeout(20*time.Second, command, "whoami")
 	if err != nil {
 		return nil, err
 	}
