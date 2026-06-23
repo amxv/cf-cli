@@ -18,6 +18,7 @@ A CLI tool written in Go using Cobra to update or insert **A records** (or other
 - Supports TTL and Cloudflare proxy settings
 - Supports record types beyond `A`
 - Reads Cloudflare API token, bootstrap token, zone ID, account ID, default domain, and optional R2 log sink credentials from environment variables or the macOS keychain
+- Requires an explicit Cloudflare profile via `--profile` or `CF_PROFILE` for all operational commands
 
 ---
 
@@ -134,7 +135,7 @@ cf doctor
 
 | Flag         | Default | Description                                  |
 |--------------|---------|----------------------------------------------|
-| `--profile` | `ama` | Profile prefix for keychain lookups |
+| `--profile` | none | Required profile prefix for keychain lookups unless `CF_PROFILE` is set |
 | `--api-token` | `""`   | Cloudflare API token                         |
 | `--api-token-keychain-service` | `"<profile> cloudflare api token"` | macOS keychain service name for the API token |
 | `--bootstrap-token-keychain-service` | `"<profile> cloudflare bootstrap token"` | macOS keychain service name for the bootstrap token |

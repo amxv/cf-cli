@@ -223,6 +223,16 @@ func main() {
 	rootCmd := &cobra.Command{
 		Use:   "cf",
 		Short: "Cloudflare DNS helper for fast agent-driven DNS edits",
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if !commandNeedsExplicitProfile(cmd) {
+				return nil
+			}
+			if strings.TrimSpace(profile) == "" {
+				return errors.New("cloudflare profile is required; pass --profile <name> or set CF_PROFILE")
+			}
+			fmt.Printf("Active profile: %s\n", profile)
+			return nil
+		},
 	}
 
 	rootCmd.PersistentFlags().StringVar(&profile, "profile", defaultProfile(), "Cloudflare profile name used for keychain lookups")
@@ -2304,7 +2314,24 @@ func defaultProfile() string {
 	if value := os.Getenv("CF_PROFILE"); value != "" {
 		return value
 	}
-	return "ama"
+	return ""
+}
+
+func commandNeedsExplicitProfile(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	if cmd.Name() == "help" || cmd.Name() == "completion" {
+		return false
+	}
+	if cmd.Parent() == nil && !cmd.Flags().Changed("profile") && len(os.Args) <= 1 {
+		return false
+	}
+	helpRequested, err := cmd.Flags().GetBool("help")
+	if err == nil && helpRequested {
+		return false
+	}
+	return true
 }
 
 func defaultAPIServiceName() string {
