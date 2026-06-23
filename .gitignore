@@ -62,4 +62,8 @@ bin/
 ##################
 coverage/
 
+# Temporary workspace #
+######################
+tmp/
+
 cf
