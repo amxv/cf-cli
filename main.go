@@ -484,6 +484,68 @@ func main() {
 		},
 	}
 
+	skillCmd := &cobra.Command{
+		Use:   "skill",
+		Short: "Print the built-in agent guide for this CLI",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Println(`Cloudflare CLI Agent Guide
+
+Purpose
+- Use this CLI for Cloudflare DNS, token minting, Workers logs, R2 helpers, profile discovery, and Wrangler auth switching.
+
+Core rule
+- For Cloudflare API operations, always pass --profile <name> or set CF_PROFILE.
+
+Top-level command areas
+- cf dns ...
+- cf tokens ...
+- cf workers ...
+- cf r2 ...
+- cf profiles ...
+- cf wrangler ...
+- cf doctor
+
+Fastest DNS flow
+- cf --profile <name> dns get A @
+- cf --profile <name> dns a @ 1.2.3.4
+- cf --profile <name> dns txt verify abc123
+- cf --profile <name> dns delete TXT verify --value abc123
+
+Fastest token flow
+- cf --profile <name> tokens dns
+- cf --profile <name> tokens mint "token name" --preset dns-edit
+- cf --profile <name> tokens permissions list DNS
+
+Workers flow
+- cf --profile <name> workers list
+- cf --profile <name> workers logs <worker> --since 10m --limit 50
+- cf --profile <name> workers logs enable <worker>
+- cf --profile <name> workers logs sink setup-r2 <worker>
+
+R2 flow
+- cf --profile <name> r2 bucket create <name>
+- cf --profile <name> r2 creds mint <bucket>
+- cf --profile <name> r2 logpush bootstrap <worker> [bucket]
+
+Profile discovery
+- cf profiles list
+- cf profiles add <name>
+
+Wrangler auth switching
+- Separate from Cloudflare API profiles.
+- cf wrangler add --wrangler-cmd "npx wrangler" --label <label>
+- cf wrangler list
+- cf wrangler current
+- cf wrangler switch <name-or-id>
+- cf wrangler login
+
+Notes
+- cf doctor shows what resolves from env/keychain for the active API profile.
+- cf skill prints this guide, so no external skill file is required.`)
+			return nil
+		},
+	}
+
 	profilesCmd := &cobra.Command{
 		Use:   "profiles",
 		Short: "Manage known Cloudflare profiles",
@@ -1331,6 +1393,7 @@ func main() {
 	rootCmd.AddCommand(dnsCmd)
 	rootCmd.AddCommand(tokensCmd)
 	rootCmd.AddCommand(doctorCmd)
+	rootCmd.AddCommand(skillCmd)
 	rootCmd.AddCommand(profilesCmd)
 	rootCmd.AddCommand(wranglerRootCmd)
 	rootCmd.AddCommand(workersCmd)
@@ -2616,7 +2679,7 @@ func commandNeedsExplicitProfile(cmd *cobra.Command) bool {
 	if cmd == nil {
 		return false
 	}
-	if strings.HasPrefix(cmd.CommandPath(), "cf profiles") || strings.HasPrefix(cmd.CommandPath(), "cf wrangler") {
+	if strings.HasPrefix(cmd.CommandPath(), "cf profiles") || strings.HasPrefix(cmd.CommandPath(), "cf wrangler") || cmd.CommandPath() == "cf skill" {
 		return false
 	}
 	if cmd.Name() == "help" || cmd.Name() == "completion" {
