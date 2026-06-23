@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -185,6 +186,10 @@ type r2Bucket struct {
 	CreationDate string `json:"creation_date"`
 }
 
+type profileRegistry struct {
+	Profiles []string `json:"profiles"`
+}
+
 type apiMessage struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -229,6 +234,9 @@ func main() {
 			}
 			if strings.TrimSpace(profile) == "" {
 				return errors.New("cloudflare profile is required; pass --profile <name> or set CF_PROFILE")
+			}
+			if err := registerProfile(profile); err != nil {
+				return err
 			}
 			fmt.Printf("Active profile: %s\n", profile)
 			return nil
@@ -447,6 +455,51 @@ func main() {
 			return nil
 		},
 	}
+
+	profilesCmd := &cobra.Command{
+		Use:   "profiles",
+		Short: "Manage known Cloudflare profiles",
+	}
+
+	profilesListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List locally known Cloudflare profiles",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			registry, err := readProfileRegistry()
+			if err != nil {
+				return err
+			}
+			if len(registry.Profiles) == 0 {
+				fmt.Println("No known profiles.")
+				fmt.Println("Add one with `cf profiles add <name>` or run any command with `--profile <name>`.")
+				return nil
+			}
+			for _, p := range registry.Profiles {
+				fmt.Println(p)
+			}
+			return nil
+		},
+	}
+
+	profilesAddCmd := &cobra.Command{
+		Use:   "add [name]",
+		Short: "Register a profile name locally without touching the keychain",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := strings.TrimSpace(args[0])
+			if name == "" {
+				return errors.New("profile name is required")
+			}
+			if err := registerProfile(name); err != nil {
+				return err
+			}
+			fmt.Printf("✅ Registered profile: %s\n", name)
+			return nil
+		},
+	}
+
+	profilesCmd.AddCommand(profilesListCmd)
+	profilesCmd.AddCommand(profilesAddCmd)
 
 	mintCmd := &cobra.Command{
 		Use:   "mint:dns-token [name]",
@@ -1037,6 +1090,7 @@ func main() {
 	rootCmd.AddCommand(mintGenericCmd)
 	rootCmd.AddCommand(permsCmd)
 	rootCmd.AddCommand(doctorCmd)
+	rootCmd.AddCommand(profilesCmd)
 	rootCmd.AddCommand(workersListCmd)
 	rootCmd.AddCommand(workerLogsCmd)
 	rootCmd.AddCommand(workerCmd)
@@ -2321,6 +2375,9 @@ func commandNeedsExplicitProfile(cmd *cobra.Command) bool {
 	if cmd == nil {
 		return false
 	}
+	if cmd.CommandPath() == "cf profiles list" || cmd.CommandPath() == "cf profiles add" || cmd.CommandPath() == "cf profiles" {
+		return false
+	}
 	if cmd.Name() == "help" || cmd.Name() == "completion" {
 		return false
 	}
@@ -2396,6 +2453,70 @@ func r2EndpointForAccount(accountID, jurisdiction string) string {
 
 func defaultNamedTokenServiceName(tokenName string) string {
 	return fmt.Sprintf("%s cloudflare token %s", profile, slugify(tokenName))
+}
+
+func profileRegistryPath() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return homeDir + "/.gg/codex/cloudflare-profiles.json", nil
+}
+
+func readProfileRegistry() (*profileRegistry, error) {
+	path, err := profileRegistryPath()
+	if err != nil {
+		return nil, err
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return &profileRegistry{}, nil
+		}
+		return nil, err
+	}
+
+	var registry profileRegistry
+	if err := json.Unmarshal(data, &registry); err != nil {
+		return nil, err
+	}
+	return &registry, nil
+}
+
+func writeProfileRegistry(registry *profileRegistry) error {
+	path, err := profileRegistryPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(registry, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(path, data, 0o644)
+}
+
+func registerProfile(name string) error {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return nil
+	}
+	registry, err := readProfileRegistry()
+	if err != nil {
+		return err
+	}
+	for _, existing := range registry.Profiles {
+		if existing == trimmed {
+			return nil
+		}
+	}
+	registry.Profiles = append(registry.Profiles, trimmed)
+	sort.Strings(registry.Profiles)
+	return writeProfileRegistry(registry)
 }
 
 func chooseService(explicit, fallback string) string {

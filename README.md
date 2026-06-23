@@ -127,6 +127,7 @@ cf worker:logs api-worker --since 2h --limit 25
 cf worker logs api-worker --since 10m --limit 50
 cf worker logs enable api-worker
 cf doctor
+cf profiles list
 ```
 
 ---
@@ -150,6 +151,38 @@ cf doctor
 ---
 
 ## 🔐 Authentication
+
+## Profiles
+
+Profiles are explicit. Every operational command requires either `--profile <name>` or `CF_PROFILE=<name>`.
+
+You can see locally known profiles with:
+
+```bash
+cf profiles list
+```
+
+You can also register a profile name locally without touching the keychain:
+
+```bash
+cf profiles add ama
+```
+
+The CLI stores this local profile registry at:
+
+```bash
+~/.gg/codex/cloudflare-profiles.json
+```
+
+This registry is only for discovery and convenience. Actual credentials and IDs still come from environment variables or macOS keychain services such as:
+
+```bash
+<profile> cloudflare api token
+<profile> cloudflare bootstrap token
+<profile> cloudflare account id
+<profile> cloudflare zone id
+<profile> cloudflare domain
+```
 
 Set your Cloudflare API token as an environment variable:
 
