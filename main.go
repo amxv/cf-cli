@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -69,6 +70,8 @@ var r2LocationHint string
 var r2StorageClass string
 var activateR2ControlToken bool
 var r2StoreLogpushSecrets bool
+var wranglerCmd string
+var wranglerAccountLabel string
 
 type dnsRecord struct {
 	ID      string `json:"id"`
@@ -188,6 +191,26 @@ type r2Bucket struct {
 
 type profileRegistry struct {
 	Profiles []string `json:"profiles"`
+}
+
+type wranglerWhoamiInfo struct {
+	Email       string
+	AccountID   string
+	AccountName string
+}
+
+type wranglerAccount struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Email      string    `json:"email"`
+	AddedAt    time.Time `json:"added_at"`
+	ConfigHash string    `json:"config_hash,omitempty"`
+}
+
+type wranglerAccountsDB struct {
+	Accounts    []wranglerAccount `json:"accounts"`
+	Current     string            `json:"current"`
+	WranglerCmd string            `json:"wrangler_cmd,omitempty"`
 }
 
 type apiMessage struct {
@@ -500,6 +523,204 @@ func main() {
 
 	profilesCmd.AddCommand(profilesListCmd)
 	profilesCmd.AddCommand(profilesAddCmd)
+
+	wranglerRootCmd := &cobra.Command{
+		Use:   "wrangler",
+		Short: "Switch and manage local Wrangler authentication snapshots",
+	}
+
+	wranglerListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List saved Wrangler auth snapshots",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db, err := loadWranglerAccountsDB()
+			if err != nil {
+				return err
+			}
+			if len(db.Accounts) == 0 {
+				fmt.Println("No saved Wrangler accounts.")
+				fmt.Println("Use `cf wrangler add` after logging in with Wrangler, or `cf wrangler login` to log in and save one.")
+				return nil
+			}
+			for _, account := range db.Accounts {
+				currentMarker := ""
+				if account.ID == db.Current {
+					currentMarker = " [current]"
+				}
+				fmt.Printf("%s\t%s\t%s%s\n", account.Name, account.Email, account.ID, currentMarker)
+			}
+			return nil
+		},
+	}
+
+	wranglerCurrentCmd := &cobra.Command{
+		Use:   "current",
+		Short: "Show the current saved Wrangler account",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db, err := loadWranglerAccountsDB()
+			if err != nil {
+				return err
+			}
+			if db.Current == "" {
+				return errors.New("no current Wrangler account saved; use `cf wrangler add` or `cf wrangler login` first")
+			}
+			account := db.getAccount(db.Current)
+			if account == nil {
+				return fmt.Errorf("current Wrangler account %q is missing from the local database", db.Current)
+			}
+			fmt.Printf("%s\t%s\t%s\n", account.Name, account.Email, account.ID)
+			return nil
+		},
+	}
+
+	wranglerAddCmd := &cobra.Command{
+		Use:   "add",
+		Short: "Save the current Wrangler authentication as a switchable snapshot",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db, err := loadWranglerAccountsDB()
+			if err != nil {
+				return err
+			}
+			resolvedWranglerCmd, err := ensureWranglerCommand(db)
+			if err != nil {
+				return err
+			}
+			info, err := wranglerWhoami(resolvedWranglerCmd)
+			if err != nil {
+				return err
+			}
+			accountName := strings.TrimSpace(wranglerAccountLabel)
+			if accountName == "" {
+				accountName = info.AccountName
+			}
+			configHash, err := saveWranglerAccountConfig(info.AccountID)
+			if err != nil {
+				return err
+			}
+			db.addAccount(wranglerAccount{
+				ID:         info.AccountID,
+				Name:       accountName,
+				Email:      info.Email,
+				AddedAt:    time.Now(),
+				ConfigHash: configHash,
+			})
+			db.Current = info.AccountID
+			if err := saveWranglerAccountsDB(db); err != nil {
+				return err
+			}
+			fmt.Printf("✅ Saved Wrangler account: %s (%s)\n", accountName, info.Email)
+			fmt.Printf("account_id=%s\n", info.AccountID)
+			return nil
+		},
+	}
+	wranglerAddCmd.Flags().StringVar(&wranglerCmd, "wrangler-cmd", "", "Override the Wrangler command, for example 'wrangler' or 'npx wrangler'")
+	wranglerAddCmd.Flags().StringVar(&wranglerAccountLabel, "label", "", "Optional local label override for this Wrangler account")
+
+	wranglerSwitchCmd := &cobra.Command{
+		Use:   "switch [account-name-or-id]",
+		Short: "Switch the local Wrangler auth snapshot",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db, err := loadWranglerAccountsDB()
+			if err != nil {
+				return err
+			}
+			if len(db.Accounts) == 0 {
+				return errors.New("no saved Wrangler accounts; use `cf wrangler add` or `cf wrangler login` first")
+			}
+
+			target, err := db.findAccount(strings.TrimSpace(args[0]))
+			if err != nil {
+				return err
+			}
+
+			if db.Current != "" && db.Current != target.ID {
+				current := db.getAccount(db.Current)
+				if current != nil {
+					changed, newHash, err := saveWranglerAccountConfigIfChanged(current.ID, current.ConfigHash)
+					if err == nil && changed {
+						current.ConfigHash = newHash
+						db.addAccount(*current)
+					}
+				}
+			}
+
+			if err := restoreWranglerAccountConfig(target.ID); err != nil {
+				return err
+			}
+			db.Current = target.ID
+			if err := saveWranglerAccountsDB(db); err != nil {
+				return err
+			}
+			fmt.Printf("✅ Switched Wrangler auth to: %s (%s)\n", target.Name, target.Email)
+			fmt.Printf("account_id=%s\n", target.ID)
+			return nil
+		},
+	}
+
+	wranglerLoginCmd := &cobra.Command{
+		Use:   "login",
+		Short: "Run Wrangler login, then save the new auth snapshot",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db, err := loadWranglerAccountsDB()
+			if err != nil {
+				return err
+			}
+			resolvedWranglerCmd, err := ensureWranglerCommand(db)
+			if err != nil {
+				return err
+			}
+			if db.Current != "" {
+				current := db.getAccount(db.Current)
+				if current != nil {
+					changed, newHash, err := saveWranglerAccountConfigIfChanged(current.ID, current.ConfigHash)
+					if err == nil && changed {
+						current.ConfigHash = newHash
+						db.addAccount(*current)
+						_ = saveWranglerAccountsDB(db)
+					}
+				}
+			}
+			fmt.Println("Running Wrangler login...")
+			if err := runWranglerLogin(resolvedWranglerCmd); err != nil {
+				return err
+			}
+			info, err := wranglerWhoami(resolvedWranglerCmd)
+			if err != nil {
+				return err
+			}
+			accountName := strings.TrimSpace(wranglerAccountLabel)
+			if accountName == "" {
+				accountName = info.AccountName
+			}
+			configHash, err := saveWranglerAccountConfig(info.AccountID)
+			if err != nil {
+				return err
+			}
+			db.addAccount(wranglerAccount{
+				ID:         info.AccountID,
+				Name:       accountName,
+				Email:      info.Email,
+				AddedAt:    time.Now(),
+				ConfigHash: configHash,
+			})
+			db.Current = info.AccountID
+			if err := saveWranglerAccountsDB(db); err != nil {
+				return err
+			}
+			fmt.Printf("✅ Logged in and saved Wrangler account: %s (%s)\n", accountName, info.Email)
+			fmt.Printf("account_id=%s\n", info.AccountID)
+			return nil
+		},
+	}
+	wranglerLoginCmd.Flags().StringVar(&wranglerCmd, "wrangler-cmd", "", "Override the Wrangler command, for example 'wrangler' or 'npx wrangler'")
+	wranglerLoginCmd.Flags().StringVar(&wranglerAccountLabel, "label", "", "Optional local label override for this Wrangler account")
+
+	wranglerRootCmd.AddCommand(wranglerListCmd)
+	wranglerRootCmd.AddCommand(wranglerCurrentCmd)
+	wranglerRootCmd.AddCommand(wranglerAddCmd)
+	wranglerRootCmd.AddCommand(wranglerSwitchCmd)
+	wranglerRootCmd.AddCommand(wranglerLoginCmd)
 
 	mintCmd := &cobra.Command{
 		Use:   "mint:dns-token [name]",
@@ -1091,6 +1312,7 @@ func main() {
 	rootCmd.AddCommand(permsCmd)
 	rootCmd.AddCommand(doctorCmd)
 	rootCmd.AddCommand(profilesCmd)
+	rootCmd.AddCommand(wranglerRootCmd)
 	rootCmd.AddCommand(workersListCmd)
 	rootCmd.AddCommand(workerLogsCmd)
 	rootCmd.AddCommand(workerCmd)
@@ -2375,7 +2597,7 @@ func commandNeedsExplicitProfile(cmd *cobra.Command) bool {
 	if cmd == nil {
 		return false
 	}
-	if cmd.CommandPath() == "cf profiles list" || cmd.CommandPath() == "cf profiles add" || cmd.CommandPath() == "cf profiles" {
+	if strings.HasPrefix(cmd.CommandPath(), "cf profiles") || strings.HasPrefix(cmd.CommandPath(), "cf wrangler") {
 		return false
 	}
 	if cmd.Name() == "help" || cmd.Name() == "completion" {
@@ -2453,6 +2675,326 @@ func r2EndpointForAccount(accountID, jurisdiction string) string {
 
 func defaultNamedTokenServiceName(tokenName string) string {
 	return fmt.Sprintf("%s cloudflare token %s", profile, slugify(tokenName))
+}
+
+func wranglerAuthDir() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(homeDir, ".gg", "codex", "wrangler-auth"), nil
+}
+
+func wranglerAccountsDir() (string, error) {
+	baseDir, err := wranglerAuthDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(baseDir, "accounts"), nil
+}
+
+func wranglerAccountsDBPath() (string, error) {
+	baseDir, err := wranglerAuthDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(baseDir, "accounts.json"), nil
+}
+
+func wranglerConfigPath() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(homeDir, "Library", "Preferences", ".wrangler", "config", "default.toml"), nil
+}
+
+func ensureWranglerAuthDirs() error {
+	accountsDir, err := wranglerAccountsDir()
+	if err != nil {
+		return err
+	}
+	return os.MkdirAll(accountsDir, 0o755)
+}
+
+func loadWranglerAccountsDB() (*wranglerAccountsDB, error) {
+	path, err := wranglerAccountsDBPath()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return &wranglerAccountsDB{Accounts: []wranglerAccount{}}, nil
+		}
+		return nil, err
+	}
+	var db wranglerAccountsDB
+	if err := json.Unmarshal(data, &db); err != nil {
+		return nil, err
+	}
+	if db.Accounts == nil {
+		db.Accounts = []wranglerAccount{}
+	}
+	return &db, nil
+}
+
+func saveWranglerAccountsDB(db *wranglerAccountsDB) error {
+	if err := ensureWranglerAuthDirs(); err != nil {
+		return err
+	}
+	path, err := wranglerAccountsDBPath()
+	if err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(db, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(path, data, 0o644)
+}
+
+func (db *wranglerAccountsDB) addAccount(account wranglerAccount) {
+	for i, existing := range db.Accounts {
+		if existing.ID == account.ID {
+			db.Accounts[i] = account
+			return
+		}
+	}
+	db.Accounts = append(db.Accounts, account)
+	sort.Slice(db.Accounts, func(i, j int) bool {
+		return strings.ToLower(db.Accounts[i].Name) < strings.ToLower(db.Accounts[j].Name)
+	})
+}
+
+func (db *wranglerAccountsDB) getAccount(id string) *wranglerAccount {
+	for i := range db.Accounts {
+		if db.Accounts[i].ID == id {
+			return &db.Accounts[i]
+		}
+	}
+	return nil
+}
+
+func (db *wranglerAccountsDB) findAccount(query string) (*wranglerAccount, error) {
+	trimmed := strings.TrimSpace(query)
+	if trimmed == "" {
+		return nil, errors.New("wrangler account query is required")
+	}
+	for i := range db.Accounts {
+		if db.Accounts[i].ID == trimmed || strings.EqualFold(db.Accounts[i].Name, trimmed) || strings.EqualFold(db.Accounts[i].Email, trimmed) {
+			return &db.Accounts[i], nil
+		}
+	}
+	lowerQuery := strings.ToLower(trimmed)
+	var matches []*wranglerAccount
+	for i := range db.Accounts {
+		account := &db.Accounts[i]
+		if strings.Contains(strings.ToLower(account.Name), lowerQuery) ||
+			strings.Contains(strings.ToLower(account.Email), lowerQuery) ||
+			strings.Contains(strings.ToLower(account.ID), lowerQuery) {
+			matches = append(matches, account)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		names := make([]string, 0, len(matches))
+		for _, match := range matches {
+			names = append(names, fmt.Sprintf("%s (%s)", match.Name, match.ID))
+		}
+		return nil, fmt.Errorf("wrangler account query %q is ambiguous: %s", trimmed, strings.Join(names, ", "))
+	}
+	return nil, fmt.Errorf("no saved Wrangler account matches %q", trimmed)
+}
+
+func hashFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(data)
+	return fmt.Sprintf("%x", hash[:]), nil
+}
+
+func currentWranglerConfigHash() (string, error) {
+	path, err := wranglerConfigPath()
+	if err != nil {
+		return "", err
+	}
+	return hashFile(path)
+}
+
+func wranglerAccountConfigSnapshotPath(accountID string) (string, error) {
+	accountsDir, err := wranglerAccountsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(accountsDir, accountID+".toml"), nil
+}
+
+func saveWranglerAccountConfig(accountID string) (string, error) {
+	if err := ensureWranglerAuthDirs(); err != nil {
+		return "", err
+	}
+	srcPath, err := wranglerConfigPath()
+	if err != nil {
+		return "", err
+	}
+	dstPath, err := wranglerAccountConfigSnapshotPath(accountID)
+	if err != nil {
+		return "", err
+	}
+	if err := copyFile(srcPath, dstPath); err != nil {
+		return "", err
+	}
+	return hashFile(srcPath)
+}
+
+func saveWranglerAccountConfigIfChanged(accountID, currentHash string) (bool, string, error) {
+	newHash, err := currentWranglerConfigHash()
+	if err != nil {
+		return false, "", err
+	}
+	if newHash == currentHash {
+		return false, currentHash, nil
+	}
+	_, err = saveWranglerAccountConfig(accountID)
+	if err != nil {
+		return false, "", err
+	}
+	return true, newHash, nil
+}
+
+func restoreWranglerAccountConfig(accountID string) error {
+	srcPath, err := wranglerAccountConfigSnapshotPath(accountID)
+	if err != nil {
+		return err
+	}
+	dstPath, err := wranglerConfigPath()
+	if err != nil {
+		return err
+	}
+	return copyFile(srcPath, dstPath)
+}
+
+func resolveWranglerCommand() string {
+	if strings.TrimSpace(wranglerCmd) != "" {
+		return strings.TrimSpace(wranglerCmd)
+	}
+	if env := os.Getenv("CF_WRANGLER_CMD"); env != "" {
+		return strings.TrimSpace(env)
+	}
+	if env := os.Getenv("CLOUDFLARE_WRANGLER_CMD"); env != "" {
+		return strings.TrimSpace(env)
+	}
+	return ""
+}
+
+func tryWranglerCommand(command string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return false
+	}
+	parts := strings.Fields(command)
+	args := append(parts[1:], "--version")
+	cmd := exec.Command(parts[0], args...)
+	return cmd.Run() == nil
+}
+
+func detectWranglerCommand() string {
+	candidates := []string{"wrangler", "npx wrangler"}
+	for _, candidate := range candidates {
+		if tryWranglerCommand(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func ensureWranglerCommand(db *wranglerAccountsDB) (string, error) {
+	if resolved := resolveWranglerCommand(); resolved != "" {
+		if !tryWranglerCommand(resolved) {
+			return "", fmt.Errorf("configured Wrangler command %q is not runnable", resolved)
+		}
+		db.WranglerCmd = resolved
+		_ = saveWranglerAccountsDB(db)
+		return resolved, nil
+	}
+	if strings.TrimSpace(db.WranglerCmd) != "" && tryWranglerCommand(db.WranglerCmd) {
+		return db.WranglerCmd, nil
+	}
+	detected := detectWranglerCommand()
+	if detected == "" {
+		return "", errors.New("wrangler command not found; install Wrangler or set CF_WRANGLER_CMD to something like 'wrangler' or 'npx wrangler'")
+	}
+	db.WranglerCmd = detected
+	_ = saveWranglerAccountsDB(db)
+	return detected, nil
+}
+
+func runWranglerCommand(command string, args ...string) ([]byte, error) {
+	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		return nil, errors.New("wrangler command is empty")
+	}
+	cmd := exec.Command(parts[0], append(parts[1:], args...)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return output, fmt.Errorf("failed to run %s %s: %w\nOutput: %s", command, strings.Join(args, " "), err, string(output))
+	}
+	return output, nil
+}
+
+func wranglerWhoami(command string) (*wranglerWhoamiInfo, error) {
+	output, err := runWranglerCommand(command, "whoami")
+	if err != nil {
+		return nil, err
+	}
+	return parseWranglerWhoamiOutput(string(output))
+}
+
+func parseWranglerWhoamiOutput(output string) (*wranglerWhoamiInfo, error) {
+	info := &wranglerWhoamiInfo{}
+	emailRegex := regexp.MustCompile(`associated with the email (\S+)`)
+	if match := emailRegex.FindStringSubmatch(output); len(match) > 1 {
+		info.Email = strings.TrimSuffix(match[1], ".")
+	}
+	rowRegex := regexp.MustCompile(`│\s*([^│]+?)\s*│\s*([^│]+?)\s*│`)
+	matches := rowRegex.FindAllStringSubmatch(output, -1)
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+		name := strings.TrimSpace(match[1])
+		id := strings.TrimSpace(match[2])
+		if name == "Account Name" && id == "Account ID" {
+			continue
+		}
+		if name != "" && id != "" {
+			info.AccountName = name
+			info.AccountID = id
+			break
+		}
+	}
+	if info.AccountID == "" {
+		return nil, errors.New("could not parse account ID from `wrangler whoami` output")
+	}
+	return info, nil
+}
+
+func runWranglerLogin(command string) error {
+	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		return errors.New("wrangler command is empty")
+	}
+	cmd := exec.Command(parts[0], append(parts[1:], "login")...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func profileRegistryPath() (string, error) {
@@ -2929,6 +3471,27 @@ func shellSafeFilter(value string) string {
 		return "\"\""
 	}
 	return fmt.Sprintf("%q", value)
+}
+
+func copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	return err
 }
 
 func formatEventTime(event telemetryEvent) string {

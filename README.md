@@ -128,6 +128,7 @@ cf worker logs api-worker --since 10m --limit 50
 cf worker logs enable api-worker
 cf doctor
 cf profiles list
+cf wrangler list
 ```
 
 ---
@@ -182,6 +183,50 @@ This registry is only for discovery and convenience. Actual credentials and IDs 
 <profile> cloudflare account id
 <profile> cloudflare zone id
 <profile> cloudflare domain
+```
+
+## Wrangler Auth Switching
+
+This is separate from the Cloudflare API profiles above.
+
+Use the `wrangler` command group to snapshot and switch the local Wrangler OAuth/config state stored in Wrangler's `default.toml`.
+
+Available commands:
+
+```bash
+cf wrangler list
+cf wrangler current
+cf wrangler add
+cf wrangler switch <name-or-id>
+cf wrangler login
+```
+
+Examples:
+
+```bash
+cf wrangler add --wrangler-cmd "npx wrangler" --label ama-wrangler
+cf wrangler list
+cf wrangler current
+cf wrangler switch ama
+```
+
+How it works:
+
+- Wrangler auth is read from `~/Library/Preferences/.wrangler/config/default.toml` on macOS.
+- This CLI stores snapshots in `~/.gg/codex/wrangler-auth/accounts/`.
+- The local Wrangler account database is stored at `~/.gg/codex/wrangler-auth/accounts.json`.
+- Before switching, the CLI automatically re-saves the current Wrangler config if the file hash changed.
+
+If Wrangler is not in `PATH`, set:
+
+```bash
+export CF_WRANGLER_CMD="npx wrangler"
+```
+
+or pass:
+
+```bash
+cf wrangler add --wrangler-cmd "npx wrangler"
 ```
 
 Set your Cloudflare API token as an environment variable:
