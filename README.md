@@ -62,32 +62,33 @@ chmod +x cf
 ## ✅ Usage
 
 ```bash
-cf update:dns [domain] [type] [key] [value] [comment (optional)]
-```
+cf dns update [domain] [type] [key] [value] [comment (optional)]
+cf dns set [type] [key] [value] [comment]
+cf dns a [key] [ipv4] [comment]
+cf dns aaaa [key] [ipv6] [comment]
+cf dns cname [key] [target] [comment]
+cf dns txt [key] [text] [comment]
+cf dns mx [key] [priority] [mail-server] [comment]
+cf dns list [type] [key]
+cf dns get [type] [key]
+cf dns delete [type] [key] [--value value] [--all]
 
-```bash
-cf mint:dns-token [name]
-```
+cf tokens dns [name]
+cf tokens mint [name]
+cf tokens permissions list [filter]
 
-```bash
-cf set [type] [key] [value] [comment]
-cf a [key] [ipv4] [comment]
-cf aaaa [key] [ipv6] [comment]
-cf cname [key] [target] [comment]
-cf txt [key] [text] [comment]
-cf mx [key] [priority] [mail-server] [comment]
-cf list [type] [key]
-cf get [type] [key]
-cf delete [type] [key] [--value value] [--all]
-cf workers:list [filter]
-cf worker:logs [worker] [--since 1h] [--limit 20] [--view events|invocations] [--search text]
-cf worker logs [worker] [--since 10m] [--limit 50] [--view events|invocations] [--search text]
-cf worker logs recent [worker] [--since 10m] [--limit 50]
-cf worker logs enable [worker] [--persist] [--invocations] [--sample 1]
-cf worker logs sink setup-r2 [worker]
+cf workers list [filter]
+cf workers logs [worker] [--since 10m] [--limit 50] [--view events|invocations] [--search text]
+cf workers logs recent [worker] [--since 10m] [--limit 50]
+cf workers logs enable [worker] [--persist] [--invocations] [--sample 1]
+cf workers logs sink setup-r2 [worker]
+
 cf r2 bucket create [name]
 cf r2 creds mint [bucket]
 cf r2 logpush bootstrap [worker] [bucket(optional)]
+
+cf profiles list
+cf wrangler list
 cf doctor
 ```
 
@@ -106,7 +107,7 @@ cf doctor
 ### 🔁 Example
 
 ```bash
-cf update:dns example.com A @ 123.123.123.123 "Main site IP"
+cf dns update example.com A @ 123.123.123.123 "Main site IP"
 ```
 
 This updates or inserts the A record for `example.com` with a comment.
@@ -114,18 +115,17 @@ This updates or inserts the A record for `example.com` with a comment.
 Agent-friendly shortcuts:
 
 ```bash
-cf a @ 123.123.123.123
-cf aaaa @ 2001:db8::10
-cf set CNAME www app.example.net
-cf txt verify abc123
-cf mx @ 10 mx1.mailhost.com
-cf list TXT
-cf get CNAME www
-cf delete TXT verify --value abc123
-cf workers:list
-cf worker:logs api-worker --since 2h --limit 25
-cf worker logs api-worker --since 10m --limit 50
-cf worker logs enable api-worker
+cf dns a @ 123.123.123.123
+cf dns aaaa @ 2001:db8::10
+cf dns set CNAME www app.example.net
+cf dns txt verify abc123
+cf dns mx @ 10 mx1.mailhost.com
+cf dns list TXT
+cf dns get CNAME www
+cf dns delete TXT verify --value abc123
+cf workers list
+cf workers logs api-worker --since 10m --limit 50
+cf workers logs enable api-worker
 cf doctor
 cf profiles list
 cf wrangler list
@@ -265,11 +265,11 @@ For agents, the shortest workflow is:
 
 ```bash
 cf doctor
-cf mint:dns-token
-cf a @ 123.123.123.123
-cf set CNAME www target.example.net
-cf list
-cf delete TXT old-verification --all
+cf tokens dns
+cf dns a @ 123.123.123.123
+cf dns set CNAME www target.example.net
+cf dns list
+cf dns delete TXT old-verification --all
 ```
 
 ## Workers Logs
@@ -279,36 +279,36 @@ This CLI reads the same persisted Workers observability dataset that powers Clou
 List deployed Workers:
 
 ```bash
-cf workers:list
-cf workers:list upload
+cf workers list
+cf workers list upload
 ```
 
 View recent persisted logs for one Worker:
 
 ```bash
-cf worker logs my-worker
-cf worker logs my-worker --since 10m --limit 50
-cf worker logs recent my-worker --view invocations
-cf worker logs recent my-worker --search timeout
+cf workers logs my-worker
+cf workers logs my-worker --since 10m --limit 50
+cf workers logs recent my-worker --view invocations
+cf workers logs recent my-worker --search timeout
 ```
 
 Enable persisted logs and invocation logs for a Worker:
 
 ```bash
-cf worker logs enable my-worker
-cf worker logs enable my-worker --logpush
+cf workers logs enable my-worker
+cf workers logs enable my-worker --logpush
 ```
 
 If your active token is DNS-only, mint and activate a Workers-readable account token:
 
 ```bash
-cf mint:token "ama workers logs" --preset workers-logs-read --store --activate
+cf tokens mint "ama workers logs" --preset workers-logs-read --store --activate
 ```
 
 If you also want to enable logs or create Logpush jobs, mint and activate the admin preset instead:
 
 ```bash
-cf mint:token "ama workers logs admin" --preset workers-logs-admin --store --activate
+cf tokens mint "ama workers logs admin" --preset workers-logs-admin --store --activate
 ```
 
 The `workers-logs-read` preset includes:
@@ -323,7 +323,7 @@ The `workers-logs-admin` preset adds:
 - `Workers Observability Write`
 - `Logs Write`
 
-If your active token is too narrow, `cf worker logs enable ...` will automatically mint a temporary `workers-logs-admin` helper token from the configured bootstrap token and retry once.
+If your active token is too narrow, `cf workers logs enable ...` will automatically mint a temporary `workers-logs-admin` helper token from the configured bootstrap token and retry once.
 
 ## Workers Logpush To R2
 
@@ -332,13 +332,13 @@ Use this when you want exported trace-event logs in R2 in addition to the built-
 Create or verify an account-level `workers_trace_events` Logpush job to R2 and enable the target Worker's `logpush` flag:
 
 ```bash
-cf worker logs sink setup-r2 my-worker
+cf workers logs sink setup-r2 my-worker
 ```
 
 You can also provide the R2 sink details explicitly:
 
 ```bash
-cf worker logs sink setup-r2 my-worker \
+cf workers logs sink setup-r2 my-worker \
   --bucket my-log-bucket \
   --path workers-trace-events \
   --r2-access-key-id "$CF_R2_ACCESS_KEY_ID" \
@@ -365,10 +365,10 @@ security add-generic-password -U -a 'cloudflare-dns-cli' -s 'ama cloudflare work
 
 Notes:
 
-- `cf worker logs ...` and `cf worker:logs ...` both use the persisted Workers observability query API, which is the best path for "show me the last 5-10 minutes".
-- `cf worker logs enable ...` uses the Worker script settings API and requires broader Worker permissions than the read-only recent-log flow.
-- `cf worker logs sink setup-r2 ...` uses the account-level Logpush API and requires `Logs Write` plus valid R2 credentials.
-- If your active token is too narrow, `cf worker logs sink setup-r2 ...` will automatically mint a temporary `workers-r2-logpush-admin` helper token from the configured bootstrap token and retry once.
+- `cf workers logs ...` uses the persisted Workers observability query API, which is the best path for "show me the last 5-10 minutes".
+- `cf workers logs enable ...` uses the Worker script settings API and requires broader Worker permissions than the read-only recent-log flow.
+- `cf workers logs sink setup-r2 ...` uses the account-level Logpush API and requires `Logs Write` plus valid R2 credentials.
+- If your active token is too narrow, `cf workers logs sink setup-r2 ...` will automatically mint a temporary `workers-r2-logpush-admin` helper token from the configured bootstrap token and retry once.
 - Cloudflare also enforces account-level Logpush access separately from Workers permissions. If the command still fails with `10000: Authentication error`, the account member backing the token likely needs `Administrator`, `Super Administrator`, or `Log Share` edit access in the Cloudflare dashboard.
 - These Worker commands are account-level, so they use `CF_ACCOUNT_ID` or the configured account ID keychain entry in addition to the API token.
 
@@ -403,8 +403,8 @@ cf r2 logpush bootstrap amaos-docs-alias-ingest ama-workers-trace-events
 Useful presets:
 
 ```bash
-cf mint:token "ama r2 admin" --preset r2-admin --store
-cf mint:token "ama workers+r2 admin" --preset workers-r2-logpush-admin --store --activate
+cf tokens mint "ama r2 admin" --preset r2-admin --store
+cf tokens mint "ama workers+r2 admin" --preset workers-r2-logpush-admin --store --activate
 ```
 
 The `r2-admin` preset includes:
@@ -424,13 +424,13 @@ The `workers-r2-logpush-admin` preset combines:
 Mint a fresh zone-scoped token and store it as the active API token for the current profile:
 
 ```bash
-./cf mint:dns-token
+./cf tokens dns
 ```
 
 Mint one with a custom display name and expiry:
 
 ```bash
-./cf mint:dns-token "ama bot token" --expires-on 2026-12-31T23:59:59Z
+./cf tokens dns "ama bot token" --expires-on 2026-12-31T23:59:59Z
 ```
 
 ---

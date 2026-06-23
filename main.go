@@ -250,7 +250,7 @@ type genericMintRequest struct {
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "cf",
-		Short: "Cloudflare DNS helper for fast agent-driven DNS edits",
+		Short: "Cloudflare operations CLI for DNS, tokens, Workers, R2, profiles, and Wrangler auth",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			if !commandNeedsExplicitProfile(cmd) {
 				return nil
@@ -273,8 +273,13 @@ func main() {
 	rootCmd.PersistentFlags().StringVar(&accountIDKeychainService, "account-id-keychain-service", "", "Override the macOS keychain service name for the account ID")
 	rootCmd.PersistentFlags().StringVar(&domainKeychainService, "domain-keychain-service", "", "Override the macOS keychain service name for the default domain")
 
+	dnsCmd := &cobra.Command{
+		Use:   "dns",
+		Short: "Manage Cloudflare DNS records for the active profile",
+	}
+
 	updateCmd := &cobra.Command{
-		Use:   "update:dns [domain] [type] [key] [value] [comment (optional)]",
+		Use:   "update [domain] [type] [key] [value] [comment (optional)]",
 		Short: "Update or insert a DNS record for a domain",
 		Args:  cobra.MinimumNArgs(4),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -524,6 +529,11 @@ func main() {
 	profilesCmd.AddCommand(profilesListCmd)
 	profilesCmd.AddCommand(profilesAddCmd)
 
+	tokensCmd := &cobra.Command{
+		Use:   "tokens",
+		Short: "Mint and inspect Cloudflare API tokens",
+	}
+
 	wranglerRootCmd := &cobra.Command{
 		Use:   "wrangler",
 		Short: "Switch and manage local Wrangler authentication snapshots",
@@ -723,7 +733,7 @@ func main() {
 	wranglerRootCmd.AddCommand(wranglerLoginCmd)
 
 	mintCmd := &cobra.Command{
-		Use:   "mint:dns-token [name]",
+		Use:   "dns [name]",
 		Short: "Mint a fresh zone-scoped DNS token via the Cloudflare API",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -771,7 +781,7 @@ func main() {
 	mintCmd.Flags().BoolVar(&storeMintedToken, "store", true, "Store the minted API token in the macOS keychain")
 
 	mintGenericCmd := &cobra.Command{
-		Use:   "mint:token [name]",
+		Use:   "mint [name]",
 		Short: "Mint a generic Cloudflare token by permission name and scope",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -832,8 +842,13 @@ func main() {
 	mintGenericCmd.Flags().BoolVar(&storeMintedToken, "store", true, "Store the minted token in the macOS keychain")
 	mintGenericCmd.Flags().BoolVar(&activateMintedToken, "activate", false, "Also store the minted token as the active API token for this profile")
 
+	tokensPermissionsCmd := &cobra.Command{
+		Use:   "permissions",
+		Short: "Inspect permission groups available for token minting",
+	}
+
 	permsCmd := &cobra.Command{
-		Use:   "permissions:list [filter]",
+		Use:   "list [filter]",
 		Short: "List Cloudflare token permission groups available to the bootstrap token",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -856,6 +871,7 @@ func main() {
 		},
 	}
 	permsCmd.Flags().StringVar(&bootstrapToken, "bootstrap-token", "", "Cloudflare bootstrap token")
+	tokensPermissionsCmd.AddCommand(permsCmd)
 
 	r2Cmd := &cobra.Command{
 		Use:   "r2",
@@ -1054,8 +1070,13 @@ func main() {
 		return runWorkerLogsRecent(resolvedToken, resolvedAccountID, name)
 	}
 
+	workersCmd := &cobra.Command{
+		Use:   "workers",
+		Short: "Manage deployed Workers and their observability",
+	}
+
 	workersListCmd := &cobra.Command{
-		Use:   "workers:list [filter]",
+		Use:   "list [filter]",
 		Short: "List deployed Workers for the current account",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1085,9 +1106,10 @@ func main() {
 	workersListCmd.Flags().StringVar(&accountID, "account-id", "", "Cloudflare account ID")
 
 	workerLogsCmd := &cobra.Command{
-		Use:   "worker:logs [worker]",
-		Short: "Show recent persisted logs for a deployed Worker",
-		Args:  cobra.MaximumNArgs(1),
+		Use:    "worker:logs [worker]",
+		Short:  "Show recent persisted logs for a deployed Worker",
+		Hidden: true,
+		Args:   cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return workerLogsRun(args)
 		},
@@ -1098,11 +1120,6 @@ func main() {
 	workerLogsCmd.Flags().IntVar(&workersLimit, "limit", 20, "Maximum number of recent log entries or invocation groups to print")
 	workerLogsCmd.Flags().StringVar(&workersView, "view", "events", "Observability view to query: events or invocations")
 	workerLogsCmd.Flags().StringVar(&workersSearch, "search", "", "Optional substring filter against log messages")
-
-	workerCmd := &cobra.Command{
-		Use:   "worker",
-		Short: "Cloudflare Worker utilities",
-	}
 
 	workerLogsNestedCmd := &cobra.Command{
 		Use:              "logs [worker]",
@@ -1289,33 +1306,35 @@ func main() {
 	workerLogsNestedCmd.AddCommand(workerLogsEnableCmd)
 	workerLogSinkCmd.AddCommand(workerLogSinkSetupR2Cmd)
 	workerLogsNestedCmd.AddCommand(workerLogSinkCmd)
-	workerCmd.AddCommand(workerLogsNestedCmd)
+	workersCmd.AddCommand(workersListCmd)
+	workersCmd.AddCommand(workerLogsNestedCmd)
 	r2BucketCmd.AddCommand(r2BucketCreateCmd)
 	r2CredsCmd.AddCommand(r2CredsMintCmd)
 	r2LogpushCmd.AddCommand(r2LogpushBootstrapCmd)
 	r2Cmd.AddCommand(r2BucketCmd)
 	r2Cmd.AddCommand(r2CredsCmd)
 	r2Cmd.AddCommand(r2LogpushCmd)
+	dnsCmd.AddCommand(updateCmd)
+	dnsCmd.AddCommand(setCmd)
+	dnsCmd.AddCommand(listCmd)
+	dnsCmd.AddCommand(getCmd)
+	dnsCmd.AddCommand(deleteCmd)
+	dnsCmd.AddCommand(aCmd)
+	dnsCmd.AddCommand(aaaaCmd)
+	dnsCmd.AddCommand(cnameCmd)
+	dnsCmd.AddCommand(txtCmd)
+	dnsCmd.AddCommand(mxCmd)
+	tokensCmd.AddCommand(mintCmd)
+	tokensCmd.AddCommand(mintGenericCmd)
+	tokensCmd.AddCommand(tokensPermissionsCmd)
 
-	rootCmd.AddCommand(updateCmd)
-	rootCmd.AddCommand(setCmd)
-	rootCmd.AddCommand(listCmd)
-	rootCmd.AddCommand(getCmd)
-	rootCmd.AddCommand(deleteCmd)
-	rootCmd.AddCommand(aCmd)
-	rootCmd.AddCommand(aaaaCmd)
-	rootCmd.AddCommand(cnameCmd)
-	rootCmd.AddCommand(txtCmd)
-	rootCmd.AddCommand(mxCmd)
-	rootCmd.AddCommand(mintCmd)
-	rootCmd.AddCommand(mintGenericCmd)
-	rootCmd.AddCommand(permsCmd)
+	rootCmd.AddCommand(dnsCmd)
+	rootCmd.AddCommand(tokensCmd)
 	rootCmd.AddCommand(doctorCmd)
 	rootCmd.AddCommand(profilesCmd)
 	rootCmd.AddCommand(wranglerRootCmd)
-	rootCmd.AddCommand(workersListCmd)
+	rootCmd.AddCommand(workersCmd)
 	rootCmd.AddCommand(workerLogsCmd)
-	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(r2Cmd)
 
 	if err := rootCmd.Execute(); err != nil {
