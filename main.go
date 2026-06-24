@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -2763,12 +2764,36 @@ func defaultNamedTokenServiceName(tokenName string) string {
 	return fmt.Sprintf("%s cloudflare token %s", profile, slugify(tokenName))
 }
 
-func wranglerAuthDir() (string, error) {
+func cfCLIConfigDir() (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(homeDir, ".gg", "codex", "wrangler-auth"), nil
+	return filepath.Join(homeDir, ".cf-cli"), nil
+}
+
+func legacyCodexConfigDir() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(homeDir, ".gg", "codex"), nil
+}
+
+func wranglerAuthDir() (string, error) {
+	baseDir, err := cfCLIConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(baseDir, "wrangler-auth"), nil
+}
+
+func legacyWranglerAuthDir() (string, error) {
+	baseDir, err := legacyCodexConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(baseDir, "wrangler-auth"), nil
 }
 
 func wranglerAccountsDir() (string, error) {
@@ -2796,14 +2821,30 @@ func wranglerConfigPath() (string, error) {
 }
 
 func ensureWranglerAuthDirs() error {
+	if err := migrateWranglerAuthState(); err != nil {
+		return err
+	}
+	baseDir, err := wranglerAuthDir()
+	if err != nil {
+		return err
+	}
 	accountsDir, err := wranglerAccountsDir()
 	if err != nil {
 		return err
 	}
-	return os.MkdirAll(accountsDir, 0o755)
+	if err := os.MkdirAll(baseDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(accountsDir, 0o700); err != nil {
+		return err
+	}
+	return chmodRecursive(baseDir, 0o700, 0o600)
 }
 
 func loadWranglerAccountsDB() (*wranglerAccountsDB, error) {
+	if err := migrateWranglerAuthState(); err != nil {
+		return nil, err
+	}
 	path, err := wranglerAccountsDBPath()
 	if err != nil {
 		return nil, err
@@ -2838,7 +2879,7 @@ func saveWranglerAccountsDB(db *wranglerAccountsDB) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, 0o600)
 }
 
 func (db *wranglerAccountsDB) addAccount(account wranglerAccount) {
@@ -2933,7 +2974,7 @@ func saveWranglerAccountConfig(accountID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := copyFile(srcPath, dstPath); err != nil {
+	if err := copyFileWithMode(srcPath, dstPath, 0o600); err != nil {
 		return "", err
 	}
 	return hashFile(srcPath)
@@ -2963,7 +3004,7 @@ func restoreWranglerAccountConfig(accountID string) error {
 	if err != nil {
 		return err
 	}
-	return copyFile(srcPath, dstPath)
+	return copyFileWithMode(srcPath, dstPath, 0o600)
 }
 
 func resolveWranglerCommand() string {
@@ -3111,14 +3152,25 @@ func runWranglerLogin(command string) error {
 }
 
 func profileRegistryPath() (string, error) {
-	homeDir, err := os.UserHomeDir()
+	baseDir, err := cfCLIConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return homeDir + "/.gg/codex/cloudflare-profiles.json", nil
+	return filepath.Join(baseDir, "cloudflare-profiles.json"), nil
+}
+
+func legacyProfileRegistryPath() (string, error) {
+	baseDir, err := legacyCodexConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(baseDir, "cloudflare-profiles.json"), nil
 }
 
 func readProfileRegistry() (*profileRegistry, error) {
+	if err := migrateProfileRegistry(); err != nil {
+		return nil, err
+	}
 	path, err := profileRegistryPath()
 	if err != nil {
 		return nil, err
@@ -3140,11 +3192,14 @@ func readProfileRegistry() (*profileRegistry, error) {
 }
 
 func writeProfileRegistry(registry *profileRegistry) error {
+	if err := migrateProfileRegistry(); err != nil {
+		return err
+	}
 	path, err := profileRegistryPath()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(registry, "", "  ")
@@ -3152,7 +3207,7 @@ func writeProfileRegistry(registry *profileRegistry) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, 0o600)
 }
 
 func registerProfile(name string) error {
@@ -3587,24 +3642,112 @@ func shellSafeFilter(value string) string {
 }
 
 func copyFile(src, dst string) error {
+	return copyFileWithMode(src, dst, 0o644)
+}
+
+func copyFileWithMode(src, dst string, mode fs.FileMode) error {
 	srcFile, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer srcFile.Close()
 
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
 
-	dstFile, err := os.Create(dst)
+	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
 	defer dstFile.Close()
 
-	_, err = io.Copy(dstFile, srcFile)
-	return err
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return err
+	}
+	return os.Chmod(dst, mode)
+}
+
+func migrateWranglerAuthState() error {
+	srcDir, err := legacyWranglerAuthDir()
+	if err != nil {
+		return err
+	}
+	dstDir, err := wranglerAuthDir()
+	if err != nil {
+		return err
+	}
+	if err := migrateDirectoryContents(srcDir, dstDir, 0o700, 0o600); err != nil {
+		return err
+	}
+	if _, err := os.Stat(dstDir); err == nil {
+		return chmodRecursive(dstDir, 0o700, 0o600)
+	} else if errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else {
+		return err
+	}
+}
+
+func migrateProfileRegistry() error {
+	srcPath, err := legacyProfileRegistryPath()
+	if err != nil {
+		return err
+	}
+	dstPath, err := profileRegistryPath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(dstPath); err == nil {
+		return os.Chmod(dstPath, 0o600)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := os.Stat(srcPath); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return copyFileWithMode(srcPath, dstPath, 0o600)
+}
+
+func migrateDirectoryContents(srcDir, dstDir string, dirMode, fileMode fs.FileMode) error {
+	if _, err := os.Stat(srcDir); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+		targetPath := filepath.Join(dstDir, relPath)
+		if d.IsDir() {
+			return os.MkdirAll(targetPath, dirMode)
+		}
+		if _, err := os.Stat(targetPath); err == nil {
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return copyFileWithMode(path, targetPath, fileMode)
+	})
+}
+
+func chmodRecursive(root string, dirMode, fileMode fs.FileMode) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return os.Chmod(path, dirMode)
+		}
+		return os.Chmod(path, fileMode)
+	})
 }
 
 func formatEventTime(event telemetryEvent) string {

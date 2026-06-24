@@ -1,6 +1,6 @@
-# Cloudflare DNS Updater (CLI Tool)
+# Cloudflare DNS CLI
 
-A CLI tool written in Go using Cobra to update or insert **A records** (or other types) for a domain in Cloudflare via the Cloudflare API.
+A Go CLI for Cloudflare DNS operations plus token minting, Workers log access, R2 helpers, profile discovery, and Wrangler auth switching.
 
 ---
 
@@ -24,40 +24,30 @@ A CLI tool written in Go using Cobra to update or insert **A records** (or other
 
 ## 🔧 Installation
 
-1. Clone the repo:
-   ```bash
-   git clone https://github.com/sagar290/cf.git
-   cd cloudflare-dns-updater
-   ```
-
-2. Build the binary:
-   ```bash
-   go build -o cf
-   ```
-
-## 📦 Download Binaries
-
-Prebuilt binaries for all major platforms are available on the [Releases](https://github.com/sagar290/cf/releases) page.
-
-| Platform      | File Name                   |
-|---------------|-----------------------------|
-| Linux (amd64) | `cf-linux-amd64`            |
-| Linux (arm64) | `cf-linux-arm64`            |
-| macOS         | `cf-darwin-amd64`           |
-| Windows       | `cf-windows-amd64.exe`      |
-| Windows (ARM) | `cf-windows-arm64.exe`      |
-
----
-
-## 📥 Quick Download Example (Linux)
+Clone the canonical repository:
 
 ```bash
-curl -L -o cf https://github.com/sagar290/cf/releases/latest/download/cf-linux-amd64
-chmod +x cf
+git clone https://github.com/amxv/cloudflare-dns-cli.git
+cd cloudflare-dns-cli
+```
+
+Install to `~/.local/bin` by default:
+
+```bash
+./install.sh
+cf --help
+```
+
+Or build locally without installing:
+
+```bash
+go build -o cf .
 ./cf --help
 ```
 
----
+`install.sh` accepts an optional target directory as its first argument, or you can set `CF_INSTALL_DIR`.
+
+This repository does not assume published release binaries are available. Build from source unless this repo's Releases page says otherwise.
 
 ## ✅ Usage
 
@@ -166,14 +156,16 @@ cf profiles list
 You can also register a profile name locally without touching the keychain:
 
 ```bash
-cf profiles add ama
+cf profiles add personal
 ```
 
 The CLI stores this local profile registry at:
 
 ```bash
-~/.gg/codex/cloudflare-profiles.json
+~/.cf-cli/cloudflare-profiles.json
 ```
+
+If you used an older build that stored local state under `~/.gg/codex/`, the CLI automatically copies that registry into `~/.cf-cli/` the first time it needs it.
 
 This registry is only for discovery and convenience. Actual credentials and IDs still come from environment variables or macOS keychain services such as:
 
@@ -204,18 +196,19 @@ cf wrangler login
 Examples:
 
 ```bash
-cf wrangler add --wrangler-cmd "npx wrangler" --label ama-wrangler
+cf wrangler add --wrangler-cmd "npx wrangler" --label personal-wrangler
 cf wrangler list
 cf wrangler current
-cf wrangler switch ama
+cf wrangler switch personal
 ```
 
 How it works:
 
 - Wrangler auth is read from `~/Library/Preferences/.wrangler/config/default.toml` on macOS.
-- This CLI stores snapshots in `~/.gg/codex/wrangler-auth/accounts/`.
-- The local Wrangler account database is stored at `~/.gg/codex/wrangler-auth/accounts.json`.
+- This CLI stores snapshots in `~/.cf-cli/wrangler-auth/accounts/`.
+- The local Wrangler account database is stored at `~/.cf-cli/wrangler-auth/accounts.json`.
 - Before switching, the CLI automatically re-saves the current Wrangler config if the file hash changed.
+- If you used an older build that stored Wrangler snapshots under `~/.gg/codex/wrangler-auth/`, the CLI automatically copies them into `~/.cf-cli/wrangler-auth/`.
 
 If Wrangler is not in `PATH`, set:
 
@@ -238,16 +231,16 @@ export CF_API_TOKEN=your_token_here
 Or store the active token in the macOS keychain and let the CLI load it automatically:
 
 ```bash
-security add-generic-password -U -a 'cloudflare-dns-cli' -s 'ama cloudflare api token' -w 'your_token_here' ~/Library/Keychains/login.keychain-db
+security add-generic-password -U -a 'cloudflare-dns-cli' -s 'personal cloudflare api token' -w 'your_token_here' ~/Library/Keychains/login.keychain-db
 ```
 
 For token minting, the CLI also looks for:
 
 ```bash
-security add-generic-password -U -a 'cloudflare-dns-cli' -s 'ama cloudflare bootstrap token' -w 'your_bootstrap_token_here' ~/Library/Keychains/login.keychain-db
-security add-generic-password -U -a 'cloudflare-dns-cli' -s 'ama cloudflare zone id' -w 'your_zone_id_here' ~/Library/Keychains/login.keychain-db
-security add-generic-password -U -a 'cloudflare-dns-cli' -s 'ama cloudflare account id' -w 'your_account_id_here' ~/Library/Keychains/login.keychain-db
-security add-generic-password -U -a 'cloudflare-dns-cli' -s 'ama cloudflare domain' -w 'your_domain_here' ~/Library/Keychains/login.keychain-db
+security add-generic-password -U -a 'cloudflare-dns-cli' -s 'personal cloudflare bootstrap token' -w 'your_bootstrap_token_here' ~/Library/Keychains/login.keychain-db
+security add-generic-password -U -a 'cloudflare-dns-cli' -s 'personal cloudflare zone id' -w 'your_zone_id_here' ~/Library/Keychains/login.keychain-db
+security add-generic-password -U -a 'cloudflare-dns-cli' -s 'personal cloudflare account id' -w 'your_account_id_here' ~/Library/Keychains/login.keychain-db
+security add-generic-password -U -a 'cloudflare-dns-cli' -s 'personal cloudflare domain' -w 'your_domain_here' ~/Library/Keychains/login.keychain-db
 ```
 
 Equivalent environment variables are:
@@ -302,13 +295,13 @@ cf workers logs enable my-worker --logpush
 If your active token is DNS-only, mint and activate a Workers-readable account token:
 
 ```bash
-cf tokens mint "ama workers logs" --preset workers-logs-read --store --activate
+cf tokens mint "personal workers logs" --preset workers-logs-read --store --activate
 ```
 
 If you also want to enable logs or create Logpush jobs, mint and activate the admin preset instead:
 
 ```bash
-cf tokens mint "ama workers logs admin" --preset workers-logs-admin --store --activate
+cf tokens mint "personal workers logs admin" --preset workers-logs-admin --store --activate
 ```
 
 The `workers-logs-read` preset includes:
@@ -339,7 +332,7 @@ You can also provide the R2 sink details explicitly:
 
 ```bash
 cf workers logs sink setup-r2 my-worker \
-  --bucket my-log-bucket \
+  --bucket my-workers-log-bucket \
   --path workers-trace-events \
   --r2-access-key-id "$CF_R2_ACCESS_KEY_ID" \
   --r2-secret-access-key "$CF_R2_SECRET_ACCESS_KEY"
@@ -348,7 +341,7 @@ cf workers logs sink setup-r2 my-worker \
 The CLI resolves the R2 sink details from these environment variables or matching macOS keychain entries:
 
 ```bash
-export CF_R2_LOG_BUCKET=my-log-bucket
+export CF_R2_LOG_BUCKET=my-workers-log-bucket
 export CF_R2_ACCESS_KEY_ID=...
 export CF_R2_SECRET_ACCESS_KEY=...
 export CF_WORKERS_LOGPUSH_PATH=workers-trace-events
@@ -357,10 +350,10 @@ export CF_WORKERS_LOGPUSH_PATH=workers-trace-events
 Expected keychain services for the current profile:
 
 ```bash
-security add-generic-password -U -a 'cloudflare-dns-cli' -s 'ama cloudflare r2 log bucket' -w 'my-log-bucket' ~/Library/Keychains/login.keychain-db
-security add-generic-password -U -a 'cloudflare-dns-cli' -s 'ama cloudflare r2 access key id' -w 'your_r2_access_key_id' ~/Library/Keychains/login.keychain-db
-security add-generic-password -U -a 'cloudflare-dns-cli' -s 'ama cloudflare r2 secret access key' -w 'your_r2_secret_access_key' ~/Library/Keychains/login.keychain-db
-security add-generic-password -U -a 'cloudflare-dns-cli' -s 'ama cloudflare workers logpush path' -w 'workers-trace-events' ~/Library/Keychains/login.keychain-db
+security add-generic-password -U -a 'cloudflare-dns-cli' -s 'personal cloudflare r2 log bucket' -w 'my-workers-log-bucket' ~/Library/Keychains/login.keychain-db
+security add-generic-password -U -a 'cloudflare-dns-cli' -s 'personal cloudflare r2 access key id' -w 'your_r2_access_key_id' ~/Library/Keychains/login.keychain-db
+security add-generic-password -U -a 'cloudflare-dns-cli' -s 'personal cloudflare r2 secret access key' -w 'your_r2_secret_access_key' ~/Library/Keychains/login.keychain-db
+security add-generic-password -U -a 'cloudflare-dns-cli' -s 'personal cloudflare workers logpush path' -w 'workers-trace-events' ~/Library/Keychains/login.keychain-db
 ```
 
 Notes:
@@ -377,7 +370,7 @@ Notes:
 Create or reuse an R2 bucket:
 
 ```bash
-cf r2 bucket create ama-workers-trace-events
+cf r2 bucket create my-workers-trace-events
 ```
 
 If the bucket already exists and you own it, the command treats that as a reusable success path.
@@ -385,7 +378,7 @@ If the bucket already exists and you own it, the command treats that as a reusab
 Mint bucket-scoped R2 S3 credentials:
 
 ```bash
-cf r2 creds mint ama-workers-trace-events
+cf r2 creds mint my-workers-trace-events
 ```
 
 This returns:
@@ -397,14 +390,14 @@ This returns:
 Bootstrap the full Worker Logpush R2 path in one command:
 
 ```bash
-cf r2 logpush bootstrap amaos-docs-alias-ingest ama-workers-trace-events
+cf r2 logpush bootstrap my-worker my-workers-trace-events
 ```
 
 Useful presets:
 
 ```bash
-cf tokens mint "ama r2 admin" --preset r2-admin --store
-cf tokens mint "ama workers+r2 admin" --preset workers-r2-logpush-admin --store --activate
+cf tokens mint "personal r2 admin" --preset r2-admin --store
+cf tokens mint "personal workers+r2 admin" --preset workers-r2-logpush-admin --store --activate
 ```
 
 The `r2-admin` preset includes:
@@ -430,7 +423,7 @@ Mint a fresh zone-scoped token and store it as the active API token for the curr
 Mint one with a custom display name and expiry:
 
 ```bash
-./cf tokens dns "ama bot token" --expires-on 2026-12-31T23:59:59Z
+./cf tokens dns "personal bot token" --expires-on 2026-12-31T23:59:59Z
 ```
 
 ---

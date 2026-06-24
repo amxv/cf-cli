@@ -1,4 +1,4 @@
-module github.com/sagar290/cf
+module github.com/amxv/cloudflare-dns-cli
 
 go 1.22.4
 
