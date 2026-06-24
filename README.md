@@ -1,34 +1,33 @@
-# Cloudflare DNS CLI
+# CF CLI
 
-A Go CLI for Cloudflare DNS operations plus token minting, Workers log access, R2 helpers, profile discovery, and Wrangler auth switching.
+`cf` is a practical Cloudflare operations CLI. It is built for fast DNS edits, token minting, recent Workers log access, R2 helpers, and local multi-account workflows.
 
----
+## What It Covers
 
-## 🚀 Features
+- `cf dns ...` for DNS records
+- `cf tokens ...` for scoped token minting and permission lookup
+- `cf workers ...` for deployed Worker listing and persisted log access
+- `cf r2 ...` for R2 buckets, credentials, and Logpush helpers
+- `cf profiles ...` for local API profile discovery
+- `cf wrangler ...` for local Wrangler auth snapshot and switching
+- `cf doctor` for env/keychain resolution checks
 
-- Update existing DNS records
-- Insert (upsert) DNS records if not found
-- Mint new zone-scoped DNS API tokens through the Cloudflare API
-- List deployed Workers for the current account
-- View recent persisted Worker logs from Cloudflare observability
-- Enable persisted Worker logs and invocation logs from the CLI
-- Create account-level Workers Logpush jobs that export to R2
-- Create R2 buckets and mint bucket-scoped R2 S3 credentials from the CLI
-- Add optional comment to records
-- Supports TTL and Cloudflare proxy settings
-- Supports record types beyond `A`
-- Reads Cloudflare API token, bootstrap token, zone ID, account ID, default domain, and optional R2 log sink credentials from environment variables or the macOS keychain
-- Requires an explicit Cloudflare profile via `--profile` or `CF_PROFILE` for all operational commands
+## Key Behaviors
 
----
+- DNS commands always use the `cf dns <cmd>` shape
+- operational commands require `--profile <name>` or `CF_PROFILE=<name>`
+- environment variables work everywhere
+- macOS users can also use the login keychain for secret storage
+- local CLI state lives under `~/.cf-cli/`
+- older local state under `~/.gg/codex/` is migrated automatically when needed
 
-## 🔧 Installation
+## Quick Start
 
 Clone the canonical repository:
 
 ```bash
-git clone https://github.com/amxv/cloudflare-dns-cli.git
-cd cloudflare-dns-cli
+git clone https://github.com/amxv/cf-cli.git
+cd cf-cli
 ```
 
 Install to `~/.local/bin` by default:
@@ -45,9 +44,23 @@ go build -o cf .
 ./cf --help
 ```
 
-`install.sh` accepts an optional target directory as its first argument, or you can set `CF_INSTALL_DIR`.
+`install.sh` accepts an optional target directory as its first argument, or you can set `CF_INSTALL_DIR`. The installed binary name defaults to `cf`, and can be overridden with `CF_BINARY_NAME`.
 
 This repository does not assume published release binaries are available. Build from source unless this repo's Releases page says otherwise.
+
+## Fast Start
+
+```bash
+cf --profile personal doctor
+cf --profile personal dns get A @
+cf --profile personal dns a @ 203.0.113.10
+cf --profile personal dns txt verify abc123
+cf --profile personal workers logs my-worker --since 10m --limit 50
+```
+
+## Core Syntax
+
+The CLI is organized by top-level product area. DNS commands always use the `cf dns <cmd>` shape.
 
 ## ✅ Usage
 
@@ -82,7 +95,7 @@ cf wrangler list
 cf doctor
 ```
 
-### Arguments:
+### DNS Arguments
 
 | Argument | Description                                  | Required |
 |----------|----------------------------------------------|----------|
@@ -94,7 +107,7 @@ cf doctor
 
 ---
 
-### 🔁 Example
+### DNS Example
 
 ```bash
 cf dns update example.com A @ 123.123.123.123 "Main site IP"
@@ -102,7 +115,7 @@ cf dns update example.com A @ 123.123.123.123 "Main site IP"
 
 This updates or inserts the A record for `example.com` with a comment.
 
-All DNS operations use the `cf dns <cmd>` shape. Common DNS tasks:
+Common DNS tasks:
 
 ```bash
 cf dns a @ 123.123.123.123
@@ -113,15 +126,20 @@ cf dns mx @ 10 mx1.mailhost.com
 cf dns list TXT
 cf dns get CNAME www
 cf dns delete TXT verify --value abc123
-cf workers list
-cf workers logs api-worker --since 10m --limit 50
-cf workers logs enable api-worker
-cf doctor
-cf profiles list
-cf wrangler list
 ```
 
----
+## Common Non-DNS Tasks
+
+```bash
+cf --profile personal tokens dns
+cf --profile personal workers list
+cf --profile personal workers logs api-worker --since 10m --limit 50
+cf --profile personal workers logs enable api-worker
+cf --profile personal r2 bucket create my-workers-log-bucket
+cf profiles list
+cf wrangler list
+cf --profile personal doctor
+```
 
 ## ⚙️ Flags
 
@@ -142,6 +160,8 @@ cf wrangler list
 ---
 
 ## 🔐 Authentication
+
+The CLI supports environment variables everywhere. On macOS it can also read and write secrets through the login keychain.
 
 ## Profiles
 
@@ -204,7 +224,7 @@ cf wrangler switch personal
 
 How it works:
 
-- Wrangler auth is read from `~/Library/Preferences/.wrangler/config/default.toml` on macOS.
+- Wrangler auth is currently read from `~/Library/Preferences/.wrangler/config/default.toml` on macOS.
 - This CLI stores snapshots in `~/.cf-cli/wrangler-auth/accounts/`.
 - The local Wrangler account database is stored at `~/.cf-cli/wrangler-auth/accounts.json`.
 - Before switching, the CLI automatically re-saves the current Wrangler config if the file hash changed.
