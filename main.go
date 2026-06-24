@@ -507,6 +507,7 @@ Top-level command areas
 - cf doctor
 
 Fastest DNS flow
+- All DNS operations use the cf dns <cmd> shape.
 - cf --profile <name> dns get A @
 - cf --profile <name> dns a @ 1.2.3.4
 - cf --profile <name> dns txt verify abc123
@@ -830,11 +831,11 @@ Notes
 					return fmt.Errorf("minted token, but failed to store it in keychain: %w", err)
 				}
 				fmt.Printf("✅ Stored active API token in keychain service %q\n", defaultAPIServiceName())
-				fmt.Printf("Use it with:\n./cf update:dns <domain> <type> <key> <value> [comment]\n")
+				fmt.Printf("Use it with:\ncf --profile %s dns update <domain> <type> <key> <value> [comment]\n", profile)
 				return nil
 			}
 
-			fmt.Printf("Use it immediately with:\nCF_API_TOKEN=%s ./cf update:dns <domain> <type> <key> <value> [comment]\n", token.Value)
+			fmt.Printf("Use it immediately with:\nCF_API_TOKEN=%s cf --profile %s dns update <domain> <type> <key> <value> [comment]\n", token.Value, profile)
 			return nil
 		},
 	}
@@ -1612,7 +1613,7 @@ func makeRecordPayload(recordType, recordName, value, comment string) (map[strin
 	}
 	if upperType == "MX" {
 		if priority == 0 {
-			return nil, errors.New("MX records require --priority or the mx shortcut syntax: cf mx <key> <priority> <mail-server>")
+			return nil, errors.New("MX records require --priority or the DNS command syntax: cf dns mx <key> <priority> <mail-server>")
 		}
 		payload["priority"] = priority
 	}

@@ -112,7 +112,7 @@ cf dns update example.com A @ 123.123.123.123 "Main site IP"
 
 This updates or inserts the A record for `example.com` with a comment.
 
-Agent-friendly shortcuts:
+All DNS operations use the `cf dns <cmd>` shape. Common DNS tasks:
 
 ```bash
 cf dns a @ 123.123.123.123
@@ -261,15 +261,15 @@ export CF_DOMAIN=your_domain_here
 
 ## Fastest Path
 
-For agents, the shortest workflow is:
+For agents, the shortest DNS workflow is:
 
 ```bash
-cf doctor
-cf tokens dns
-cf dns a @ 123.123.123.123
-cf dns set CNAME www target.example.net
-cf dns list
-cf dns delete TXT old-verification --all
+cf --profile <name> doctor
+cf --profile <name> tokens dns
+cf --profile <name> dns a @ 123.123.123.123
+cf --profile <name> dns set CNAME www target.example.net
+cf --profile <name> dns list
+cf --profile <name> dns delete TXT old-verification --all
 ```
 
 ## Workers Logs
