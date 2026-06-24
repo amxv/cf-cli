@@ -23,49 +23,16 @@
 
 ## Quick Start
 
-Clone the canonical repository:
-
-```bash
-git clone https://github.com/amxv/cf-cli.git
-cd cf-cli
-```
-
-Install the latest GitHub release to `~/.local/bin`:
+Install the latest GitHub release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/amxv/cf-cli/main/install.sh | bash
 cf --help
 ```
 
-Install to a custom directory:
+This installs `cf` from the latest GitHub release into `~/.local/bin` by default.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/amxv/cf-cli/main/install.sh | CF_INSTALL_DIR="$HOME/bin" bash
-```
-
-If you prefer to inspect the script first:
-
-```bash
-curl -fsSL -o install.sh https://raw.githubusercontent.com/amxv/cf-cli/main/install.sh
-chmod +x install.sh
-./install.sh
-cf --help
-```
-
-Build from source locally instead:
-
-```bash
-go build -o cf .
-./cf --help
-```
-
-`install.sh` installs the latest published release by default. It accepts an optional target directory as its first argument, or you can set `CF_INSTALL_DIR`. The installed binary name defaults to `cf`, and can be overridden with `CF_BINARY_NAME`.
-
-Release assets are published here:
-
-```text
-https://github.com/amxv/cf-cli/releases
-```
+For custom install directories, manual inspection, source builds, and release details, see [INSTALL.md](/Users/ashray/code/amxv/cloudflare-dns-cli/INSTALL.md).
 
 ## Fast Start
 
