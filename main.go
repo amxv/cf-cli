@@ -3258,7 +3258,7 @@ func writeSecretToKeychain(service, value string) error {
 	cmd := exec.Command(
 		"security", "add-generic-password",
 		"-U",
-		"-a", "cloudflare-dns-cli",
+		"-a", "cf-cli",
 		"-s", service,
 		"-w", value,
 		os.ExpandEnv("$HOME/Library/Keychains/login.keychain-db"),

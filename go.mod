@@ -1,4 +1,4 @@
-module github.com/amxv/cloudflare-dns-cli
+module github.com/amxv/cf-cli
 
 go 1.22.4
 
