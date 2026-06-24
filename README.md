@@ -30,23 +30,42 @@ git clone https://github.com/amxv/cf-cli.git
 cd cf-cli
 ```
 
-Install to `~/.local/bin` by default:
+Install the latest GitHub release to `~/.local/bin`:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/amxv/cf-cli/main/install.sh | bash
+cf --help
+```
+
+Install to a custom directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/amxv/cf-cli/main/install.sh | CF_INSTALL_DIR="$HOME/bin" bash
+```
+
+If you prefer to inspect the script first:
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/amxv/cf-cli/main/install.sh
+chmod +x install.sh
 ./install.sh
 cf --help
 ```
 
-Or build locally without installing:
+Build from source locally instead:
 
 ```bash
 go build -o cf .
 ./cf --help
 ```
 
-`install.sh` accepts an optional target directory as its first argument, or you can set `CF_INSTALL_DIR`. The installed binary name defaults to `cf`, and can be overridden with `CF_BINARY_NAME`.
+`install.sh` installs the latest published release by default. It accepts an optional target directory as its first argument, or you can set `CF_INSTALL_DIR`. The installed binary name defaults to `cf`, and can be overridden with `CF_BINARY_NAME`.
 
-This repository does not assume published release binaries are available. Build from source unless this repo's Releases page says otherwise.
+Release assets are published here:
+
+```text
+https://github.com/amxv/cf-cli/releases
+```
 
 ## Fast Start
 
