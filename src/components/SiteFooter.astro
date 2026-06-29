@@ -7,23 +7,26 @@ import { siteConfig } from "../data/docs";
     <div>
       <p class="site-footer__title">{siteConfig.name}</p>
       <p>
-        A reusable editorial docs shell for teams that want a credible first
-        impression before they start adding product-specific prose.
+        Practical Cloudflare operations docs for DNS changes, token minting,
+        Workers logs, R2 helpers, local profiles, and Wrangler account
+        switching.
       </p>
     </div>
     <div>
-      <p class="site-footer__title">What ships in the template</p>
+      <p class="site-footer__title">Start here</p>
       <p>
-        Landing page sections, a docs collection, table-of-contents pages,
-        starter guidance, and enough deployment notes to ship on Vercel with a
-        Cloudflare-managed domain.
+        Begin with the quickstart, then use the docs reference for DNS,
+        authentication, Workers, R2, Wrangler, and deployment workflows.
       </p>
     </div>
     <div>
-      <p class="site-footer__title">Template repo</p>
+      <p class="site-footer__title">Repository</p>
       <p>
-        Adapt the content, point the nav to your repo, and publish the static
-        output wherever your docs belong.
+        Source, releases, and CLI updates live in the GitHub repo at
+        <a href={siteConfig.repoUrl} target="_blank" rel="noreferrer">
+          {siteConfig.repoUrl.replace("https://", "")}
+        </a>
+        .
       </p>
     </div>
   </div>
