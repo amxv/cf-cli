@@ -71,3 +71,4 @@ cf
 # Astro output
 .astro/
 dist/
+.vercel
