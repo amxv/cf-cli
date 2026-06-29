@@ -21,6 +21,25 @@
 - local CLI state lives under `~/.cf-cli/`
 - older local state under `~/.gg/codex/` is migrated automatically when needed
 
+
+## Documentation Site
+
+This repository now includes an Astro documentation site based on the zuedocs template. Run it locally with:
+
+```bash
+bun install
+bun run dev
+```
+
+Validate the docs site with:
+
+```bash
+bun run check
+bun run build
+```
+
+The docs content lives in `src/content/docs`, with site-wide navigation and metadata in `src/data/docs.ts`.
+
 ## Quick Start
 
 Install the latest GitHub release:
@@ -32,7 +51,7 @@ cf --help
 
 This installs `cf` from the latest GitHub release into `~/.local/bin` by default.
 
-For custom install directories, manual inspection, source builds, and release details, see [INSTALL.md](/Users/ashray/code/amxv/cloudflare-dns-cli/INSTALL.md).
+For custom install directories, manual inspection, source builds, and release details, see [INSTALL.md](INSTALL.md).
 
 ## Fast Start
 

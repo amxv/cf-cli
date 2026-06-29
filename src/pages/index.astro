@@ -1,0 +1,159 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import { getCollection } from "astro:content";
+import { siteConfig } from "../data/docs";
+
+const docs = (await getCollection("docs")).sort((a, b) => a.data.order - b.data.order);
+
+const proofPoints = [
+  {
+    title: "DNS edits without dashboard drift",
+    body: "Read, set, update, and delete common Cloudflare records from one explicit terminal workflow."
+  },
+  {
+    title: "Profile-aware by default",
+    body: "Keep personal, client, and production Cloudflare accounts separate with profile-scoped credentials and local state."
+  },
+  {
+    title: "Operational shortcuts",
+    body: "Mint API tokens, inspect Workers, read persisted logs, prepare R2 log buckets, and diagnose environment setup quickly."
+  },
+  {
+    title: "Wrangler account control",
+    body: "Snapshot and switch local Wrangler auth state without confusing it with API-token based Cloudflare profiles."
+  }
+];
+
+const workflows = [
+  "Point a new domain at a Vercel, Fly, Render, or custom deployment from the same shell where you are shipping code.",
+  "Create scoped Cloudflare API tokens for automation instead of reusing broad dashboard credentials.",
+  "Check Workers and recent persisted logs when debugging production behavior from a terminal session.",
+  "Keep multiple Cloudflare accounts reachable without rewriting env vars or losing track of local Wrangler auth."
+];
+---
+
+<BaseLayout
+  title={`${siteConfig.name} | ${siteConfig.strapline}`}
+  description={siteConfig.description}
+>
+  <section class="hero shell">
+    <div class="hero__copy">
+      <p class="section-label">Cloudflare operations CLI</p>
+      <h1>
+        Manage Cloudflare DNS, tokens, Workers, R2, and local profiles from one practical terminal tool.
+      </h1>
+      <p class="hero__lede">
+        cf-cli is built for day-to-day Cloudflare work: fast DNS changes, scoped token minting,
+        Workers log access, R2 helpers, multi-account profiles, Wrangler auth snapshots, and
+        a doctor command that explains what your machine is actually using.
+      </p>
+      <p class="hero__annotation">
+        It is intentionally operational. You keep account context explicit, avoid dashboard guessing,
+        and leave behind commands that are easy to audit later.
+      </p>
+      <div class="hero__actions">
+        <a class="button button--solid" href="/docs/quickstart">Start with the quickstart</a>
+        <a class="button button--ghost" href="/docs">Browse all docs</a>
+      </div>
+    </div>
+    <aside class="hero__panel">
+      <p class="hero__panel-label">Common session</p>
+      <ul class="hero__signal-list">
+        <li>Choose a profile before touching Cloudflare state.</li>
+        <li>Run doctor to verify env vars, keychain entries, and local state.</li>
+        <li>Read DNS records before and after writes.</li>
+      </ul>
+      <div class="hero__terminal">
+        <span>$ cf --profile personal doctor</span>
+        <span>$ cf dns get A @</span>
+        <span>$ cf dns cname www app.example.net</span>
+        <span>$ cf workers logs api --since 10m</span>
+      </div>
+    </aside>
+  </section>
+
+  <section class="shell section-grid">
+    <div class="section-heading">
+      <p class="section-label">Why it exists</p>
+      <h2>A small CLI for the Cloudflare tasks that interrupt shipping.</h2>
+      <p>
+        Cloudflare work often starts as a quick DNS change and turns into account switching,
+        token scoping, dashboard searching, or log hunting. cf-cli gathers those practical
+        operations into a profile-aware command surface.
+      </p>
+    </div>
+    <div class="proof-grid">
+      {proofPoints.map((item) => (
+        <article class="proof-card">
+          <h3>{item.title}</h3>
+          <p>{item.body}</p>
+        </article>
+      ))}
+    </div>
+  </section>
+
+  <section class="shell split-section">
+    <div>
+      <p class="section-label">Built for</p>
+      <h2>Engineers who want Cloudflare changes to be repeatable, visible, and profile-safe.</h2>
+    </div>
+    <div class="stack-list">
+      {workflows.map((item) => (
+        <article class="stack-list__item">
+          <p>{item}</p>
+        </article>
+      ))}
+    </div>
+  </section>
+
+  <section class="shell capability-band">
+    <div class="capability-band__intro">
+      <p class="section-label">Command areas</p>
+      <h2>One binary, several focused Cloudflare workflows.</h2>
+    </div>
+    <div class="capability-band__grid">
+      <div>
+        <p class="capability-title">DNS</p>
+        <p>Helpers for A, AAAA, CNAME, TXT, MX, list, get, update, and delete operations.</p>
+      </div>
+      <div>
+        <p class="capability-title">Tokens</p>
+        <p>Mint scoped API tokens and search Cloudflare permission groups from the terminal.</p>
+      </div>
+      <div>
+        <p class="capability-title">Workers and R2</p>
+        <p>Inspect Workers, read persisted logs, enable logging, create R2 buckets, and mint bucket credentials.</p>
+      </div>
+      <div>
+        <p class="capability-title">Profiles and Wrangler</p>
+        <p>Keep API profiles explicit and manage local Wrangler account snapshots separately.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="shell docs-teaser">
+    <div class="section-heading">
+      <p class="section-label">Docs map</p>
+      <h2>Start with installation, then move into the Cloudflare workflows you use most.</h2>
+      <p>
+        The docs are organized around the way the CLI is used: setup first, then DNS,
+        token, Workers, R2, Wrangler, and reference material.
+      </p>
+    </div>
+    <div class="docs-teaser__grid">
+      {docs.map((entry) => (
+        <a class="docs-teaser__card" href={`/docs/${entry.id}`}>
+          <span>{entry.data.category}</span>
+          <h3>{entry.data.title}</h3>
+          <p>{entry.data.summary ?? entry.data.description}</p>
+        </a>
+      ))}
+    </div>
+  </section>
+  <section class="shell closing-note">
+    <p>
+      Use cf-cli when the next Cloudflare task should be a command you can repeat,
+      review, and understand later.
+    </p>
+  </section>
+</BaseLayout>

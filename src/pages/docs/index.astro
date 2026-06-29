@@ -1,0 +1,45 @@
+---
+import { getCollection } from "astro:content";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import { docCategories } from "../../data/docs";
+import { siteConfig } from "../../data/docs";
+
+const entries = (await getCollection("docs")).sort((a, b) => a.data.order - b.data.order);
+const grouped = docCategories.map((category) => ({
+  category,
+  entries: entries.filter((entry) => entry.data.category === category)
+}));
+---
+
+<BaseLayout
+  title={`${siteConfig.name} Docs`}
+  description="Read the starter guides that explain how to shape, write, and deploy the ZueDocs template."
+>
+  <section class="shell docs-index-hero">
+    <p class="section-label">Documentation</p>
+    <h1>Use the starter guides as scaffolding, then replace them with your own narrative.</h1>
+    <p>
+      The docs area is intentionally small but opinionated: launch guidance for
+      the repo, structural guidance for authors, and operational guidance for
+      shipping the site without improvising deployment steps.
+    </p>
+  </section>
+  <section class="shell docs-index">
+    {grouped.map((group) => (
+      <section class="docs-index__group">
+        <div class="docs-index__group-head">
+          <p class="section-label">{group.category}</p>
+        </div>
+        <div class="docs-index__cards">
+          {group.entries.map((entry) => (
+            <a class="docs-index__card" href={`/docs/${entry.id}`}>
+              <h2>{entry.data.title}</h2>
+              <p>{entry.data.description}</p>
+              <span>Open guide</span>
+            </a>
+          ))}
+        </div>
+      </section>
+    ))}
+  </section>
+</BaseLayout>
