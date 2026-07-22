@@ -14,7 +14,7 @@
     "@astrojs/check": "^0.9.4",
     "@types/node": "^26.0.0",
     "astro": "^7.0.3",
-    "typescript": "^5.9.2",
+    "typescript": "^7.0.0",
     "zuedocs": "0.1.25"
   }
 }
