@@ -1,161 +1,131 @@
 ---
 import BaseLayout from "zuedocs/layouts/BaseLayout.astro";
-import { getCollection } from "astro:content";
 import { primaryNav, siteConfig } from "../data/docs";
 
-const docs = (await getCollection("docs")).sort((a, b) => a.data.order - b.data.order);
-
-const proofPoints = [
-  {
-    title: "DNS edits without dashboard drift",
-    body: "Read, set, update, and delete common Cloudflare records from one explicit terminal workflow."
-  },
-  {
-    title: "Profile-aware by default",
-    body: "Keep personal, client, and production Cloudflare accounts separate with profile-scoped credentials and local state."
-  },
-  {
-    title: "Operational shortcuts",
-    body: "Mint API tokens, inspect Workers, read persisted logs, prepare R2 log buckets, and diagnose environment setup quickly."
-  },
-  {
-    title: "Wrangler account control",
-    body: "Snapshot and switch local Wrangler auth state without confusing it with API-token based Cloudflare profiles."
-  }
+const capabilities = [
+  { index: "01", name: "DNS", command: "cf dns", copy: "Read and change A, AAAA, CNAME, TXT, and MX records with explicit profile context and clean upsert semantics." },
+  { index: "02", name: "Workers", command: "cf workers", copy: "List deployments and inspect the persisted logs from the last few minutes without opening the dashboard." },
+  { index: "03", name: "Tokens", command: "cf tokens", copy: "Search Cloudflare permissions and mint narrowly scoped credentials for the exact operation an agent needs." },
+  { index: "04", name: "R2", command: "cf r2", copy: "Create buckets, mint bucket credentials, and wire Workers trace logs into durable object storage." },
+  { index: "05", name: "Profiles", command: "cf profiles", copy: "Keep personal, client, and production accounts unambiguous, with secrets in Keychain instead of config files." },
+  { index: "06", name: "Wrangler", command: "cf wrangler", copy: "Snapshot and switch Wrangler accounts instantly instead of logging out and authenticating all over again." }
 ];
 
-const workflows = [
-  "Point a new domain at a Vercel, Fly, Render, or custom deployment from the same shell where you are shipping code.",
-  "Create scoped Cloudflare API tokens for automation instead of reusing broad dashboard credentials.",
-  "Check Workers and recent persisted logs when debugging production behavior from a terminal session.",
-  "Keep multiple Cloudflare accounts reachable without rewriting env vars or losing track of local Wrangler auth."
-];
+const install = "curl -fsSL https://raw.githubusercontent.com/amxv/cf-cli/main/install.sh | bash";
 ---
 
-<BaseLayout
-  title={`${siteConfig.name} | ${siteConfig.strapline}`}
-  description={siteConfig.description}
-  siteConfig={siteConfig}
-  primaryNav={primaryNav}
->
-  <section class="hero shell">
-    <div class="hero__copy">
-      <p class="section-label">Cloudflare operations CLI</p>
-      <h1>
-        Manage Cloudflare DNS, tokens, Workers, R2, and local profiles from one practical terminal tool.
-      </h1>
-      <p class="hero__lede">
-        cf-cli is built for day-to-day Cloudflare work: fast DNS changes, scoped token minting,
-        Workers log access, R2 helpers, multi-account profiles, Wrangler auth snapshots, and
-        a doctor command that explains what your machine is actually using.
-      </p>
-      <p class="hero__annotation">
-        It is intentionally operational. You keep account context explicit, avoid dashboard guessing,
-        and leave behind commands that are easy to audit later.
-      </p>
-      <div class="hero__actions">
-        <a class="button button--solid" href="/docs/quickstart">Start with the quickstart</a>
-        <a class="button button--ghost" href="/docs">Browse all docs</a>
+<BaseLayout title={`${siteConfig.name} | Cloudflare operations without the dashboard`} description={siteConfig.description} siteConfig={siteConfig} primaryNav={primaryNav}>
+  <main class="landing">
+    <section class="hero wrap">
+      <div class="eyebrow"><span class="pulse"></span> Agent-first Cloudflare operations</div>
+      <div class="hero-grid">
+        <div class="hero-copy">
+          <h1>Cloudflare,<br/><em>without</em> the<br/>dashboard.</h1>
+          <p class="lede">A fast Go CLI for the operational work Wrangler leaves behind: DNS, recent Workers logs, R2, scoped tokens, and painless multi-account switching.</p>
+          <div class="actions">
+            <a class="button primary" href="/docs/quickstart">Install cf-cli <span>↗</span></a>
+            <a class="button secondary" href="https://github.com/amxv/cf-cli">View on GitHub <span>↗</span></a>
+          </div>
+        </div>
+        <div class="terminal-wrap" aria-label="Terminal demonstration">
+          <div class="terminal-shadow"></div>
+          <div class="terminal">
+            <div class="terminal-bar"><span>cf / personal</span><span class="status">● ready</span></div>
+            <div class="terminal-body">
+              <p><i>$</i> cf --profile personal doctor</p>
+              <p class="dim">✓ API token&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;macOS Keychain</p>
+              <p class="dim">✓ Account ID&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;resolved</p>
+              <p class="dim">✓ Default domain&nbsp;&nbsp;ashray.xyz</p>
+              <p class="spacer"><i>$</i> cf dns cname docs cf.pages.dev</p>
+              <p class="success">updated CNAME docs → cf.pages.dev</p>
+              <p class="spacer"><i>$</i> cf workers logs api --since 10m</p>
+              <p class="dim">12:43:08&nbsp; POST /v1/deploy&nbsp; <b>200</b>&nbsp; 84ms</p>
+              <p class="cursor"><i>$</i> <span></span></p>
+            </div>
+          </div>
+          <div class="terminal-note">one binary · zero dashboard tabs</div>
+        </div>
       </div>
-    </div>
-    <aside class="hero__panel">
-      <p class="hero__panel-label">Common session</p>
-      <ul class="hero__signal-list">
-        <li>Choose a profile before touching Cloudflare state.</li>
-        <li>Run doctor to verify env vars, keychain entries, and local state.</li>
-        <li>Read DNS records before and after writes.</li>
-      </ul>
-      <div class="hero__terminal">
-        <span>$ cf --profile personal doctor</span>
-        <span>$ cf dns get A @</span>
-        <span>$ cf dns cname www app.example.net</span>
-        <span>$ cf workers logs api --since 10m</span>
-      </div>
-    </aside>
-  </section>
+      <div class="ticker" aria-label="Feature summary"><span>DNS</span><b>✦</b><span>WORKERS LOGS</span><b>✦</b><span>R2</span><b>✦</b><span>SCOPED TOKENS</span><b>✦</b><span>MULTI-ACCOUNT</span></div>
+    </section>
 
-  <section class="shell section-grid">
-    <div class="section-heading">
-      <p class="section-label">Why it exists</p>
-      <h2>A small CLI for the Cloudflare tasks that interrupt shipping.</h2>
-      <p>
-        Cloudflare work often starts as a quick DNS change and turns into account switching,
-        token scoping, dashboard searching, or log hunting. cf-cli gathers those practical
-        operations into a profile-aware command surface.
-      </p>
-    </div>
-    <div class="proof-grid">
-      {proofPoints.map((item) => (
-        <article class="proof-card">
-          <h3>{item.title}</h3>
-          <p>{item.body}</p>
-        </article>
-      ))}
-    </div>
-  </section>
+    <section class="manifesto wrap">
+      <p class="kicker">The missing operations layer</p>
+      <div class="manifesto-grid">
+        <h2>Wrangler deploys.<br/><span>cf operates.</span></h2>
+        <div class="manifesto-copy">
+          <p>Wrangler is excellent at building and deploying Cloudflare applications. It is not a general interface to the rest of Cloudflare.</p>
+          <p><strong>cf-cli fills that gap.</strong> It handles the small operational tasks that otherwise pull you out of your terminal and into a maze of zones, accounts, permissions, and dashboard panels.</p>
+        </div>
+      </div>
+    </section>
 
-  <section class="shell split-section">
-    <div>
-      <p class="section-label">Built for</p>
-      <h2>Engineers who want Cloudflare changes to be repeatable, visible, and profile-safe.</h2>
-    </div>
-    <div class="stack-list">
-      {workflows.map((item) => (
-        <article class="stack-list__item">
-          <p>{item}</p>
-        </article>
-      ))}
-    </div>
-  </section>
+    <section class="escape wrap">
+      <div class="escape-card">
+        <div class="escape-number">∞</div>
+        <div class="escape-copy">
+          <p class="kicker">The escape hatch</p>
+          <h2>The CLI does not need to know every Cloudflare API call.</h2>
+          <p>A bootstrap token can mint a new token scoped to exactly the permissions an agent needs. When a first-class command does not exist yet, the agent reads Cloudflare’s API docs, creates a temporary least-privilege credential, and keeps moving.</p>
+          <p class="callout">You never become the bottleneck—and the broad master credential never becomes the default.</p>
+        </div>
+        <div class="token-stack" aria-hidden="true">
+          <div class="token token-one"><small>BOOTSTRAP</small><b>••••••••••••</b><span>mint only</span></div>
+          <div class="token token-two"><small>SCOPED TOKEN</small><b>Workers Logs: Read</b><span>expires soon</span></div>
+        </div>
+      </div>
+    </section>
 
-  <section class="shell capability-band">
-    <div class="capability-band__intro">
-      <p class="section-label">Command areas</p>
-      <h2>One binary, several focused Cloudflare workflows.</h2>
-    </div>
-    <div class="capability-band__grid">
-      <div>
-        <p class="capability-title">DNS</p>
-        <p>Helpers for A, AAAA, CNAME, TXT, MX, list, get, update, and delete operations.</p>
+    <section class="capabilities wrap">
+      <div class="section-head"><div><p class="kicker">Command surface</p><h2>Six sharp tools.<br/>One tiny binary.</h2></div><p>Purpose-built commands for the Cloudflare work agents and engineers actually repeat.</p></div>
+      <div class="cap-grid">
+        {capabilities.map((item) => (
+          <article class="cap-card">
+            <div class="cap-top"><span>{item.index}</span><code>{item.command}</code></div>
+            <h3>{item.name}</h3>
+            <p>{item.copy}</p>
+            <a href="/docs/command-reference" aria-label={`Read ${item.name} documentation`}>Read docs <span>↗</span></a>
+          </article>
+        ))}
       </div>
-      <div>
-        <p class="capability-title">Tokens</p>
-        <p>Mint scoped API tokens and search Cloudflare permission groups from the terminal.</p>
-      </div>
-      <div>
-        <p class="capability-title">Workers and R2</p>
-        <p>Inspect Workers, read persisted logs, enable logging, create R2 buckets, and mint bucket credentials.</p>
-      </div>
-      <div>
-        <p class="capability-title">Profiles and Wrangler</p>
-        <p>Keep API profiles explicit and manage local Wrangler account snapshots separately.</p>
-      </div>
-    </div>
-  </section>
+    </section>
 
-  <section class="shell docs-teaser">
-    <div class="section-heading">
-      <p class="section-label">Docs map</p>
-      <h2>Start with installation, then move into the Cloudflare workflows you use most.</h2>
-      <p>
-        The docs are organized around the way the CLI is used: setup first, then DNS,
-        token, Workers, R2, Wrangler, and reference material.
-      </p>
-    </div>
-    <div class="docs-teaser__grid">
-      {docs.map((entry) => (
-        <a class="docs-teaser__card" href={`/docs/${entry.id}`}>
-          <span>{entry.data.category}</span>
-          <h3>{entry.data.title}</h3>
-          <p>{entry.data.summary ?? entry.data.description}</p>
-        </a>
-      ))}
-    </div>
-  </section>
-  <section class="shell closing-note">
-    <p>
-      Use cf-cli when the next Cloudflare task should be a command you can repeat,
-      review, and understand later.
-    </p>
-  </section>
+    <section class="workflow wrap">
+      <div class="workflow-copy"><p class="kicker">Made for agents</p><h2>Say what you want.<br/>The CLI explains itself.</h2><p>There is no separate agent handbook to maintain. The command tree, flags, and help text are the interface. An agent starts with <code>cf --help</code>, discovers the right operation, and leaves behind an auditable command.</p></div>
+      <div class="conversation">
+        <div class="bubble human"><span>YOU</span>Point docs.example.com at the new deployment. Use my personal Cloudflare account.</div>
+        <div class="line"></div>
+        <div class="bubble agent"><span>AGENT</span><code>cf --profile personal dns cname docs project.pages.dev</code><small>✓ CNAME updated and verified</small></div>
+      </div>
+    </section>
+
+    <section class="install wrap">
+      <div><p class="kicker">Install</p><h2>From zero to <code>cf</code><br/>in one command.</h2></div>
+      <div class="install-box"><code>{install}</code><button class="copy-button" data-copy={install} type="button">Copy</button></div>
+      <div class="install-links"><a href="/docs/quickstart">Quickstart ↗</a><a href="/docs/authentication">Authentication ↗</a><a href="/docs/command-reference">Command reference ↗</a></div>
+    </section>
+  </main>
+  <script is:inline>
+    document.querySelectorAll('[data-copy]').forEach((button) => button.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(button.dataset.copy);
+      const old = button.textContent; button.textContent = 'Copied';
+      setTimeout(() => button.textContent = old, 1400);
+    }));
+  </script>
 </BaseLayout>
+
+<style>
+  :global(body){overflow-x:hidden;background:#f2efe6;color:#151515}
+  :global(html.dark body){background:#11110f;color:#f2efe6}
+  .landing{--orange:#ff5b22;--ink:#151515;--paper:#f2efe6;--lime:#c8ff3d;font-family:"IBM Plex Mono","Courier New",monospace}
+  .wrap{width:min(1180px,calc(100% - 40px));margin-inline:auto}.hero{padding:92px 0 0}.eyebrow,.kicker{text-transform:uppercase;letter-spacing:.16em;font-size:11px;font-weight:700}.eyebrow{display:flex;align-items:center;gap:10px}.pulse{width:8px;height:8px;border-radius:50%;background:var(--orange);box-shadow:0 0 0 5px color-mix(in srgb,var(--orange) 18%,transparent)}
+  .hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:70px;align-items:center;padding:56px 0 84px}.hero h1{font-family:"Arial Narrow","Helvetica Neue",sans-serif;font-size:clamp(68px,8.2vw,124px);line-height:.78;letter-spacing:-.075em;text-transform:uppercase;margin:0;max-width:760px}.hero h1 em{color:var(--orange);font-style:normal;-webkit-text-stroke:1px var(--orange)}.lede{font-family:"Helvetica Neue",sans-serif;font-size:19px;line-height:1.55;max-width:590px;margin:42px 0 34px;color:#444}.actions{display:flex;gap:12px;flex-wrap:wrap}.button{display:inline-flex;align-items:center;justify-content:space-between;gap:24px;padding:15px 18px;border:1px solid var(--ink);font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;text-decoration:none}.button.primary{background:var(--ink);color:var(--paper)}.button.secondary{color:var(--ink)}.button:hover{transform:translate(-3px,-3px);box-shadow:4px 4px 0 var(--orange)}
+  .terminal-wrap{position:relative}.terminal-shadow{position:absolute;inset:30px -22px -22px 30px;background:var(--orange);transform:rotate(3deg)}.terminal{position:relative;background:#121212;color:#ece9df;border:1px solid #000;box-shadow:0 24px 70px #0003;transform:rotate(-1.5deg)}.terminal-bar{display:flex;justify-content:space-between;border-bottom:1px solid #383838;padding:13px 16px;font-size:10px;letter-spacing:.1em;text-transform:uppercase}.status{color:var(--lime)}.terminal-body{padding:25px 22px 30px;font-size:12px;line-height:1.8;min-height:330px}.terminal-body p{margin:0}.terminal-body i{color:var(--orange);font-style:normal;margin-right:8px}.terminal-body .dim{color:#8f8f89}.terminal-body .success{color:var(--lime)}.terminal-body .spacer{margin-top:17px}.terminal-body b{color:#fff}.cursor span{display:inline-block;width:8px;height:15px;background:var(--orange);vertical-align:middle;animation:blink 1s steps(1) infinite}.terminal-note{position:absolute;right:-25px;bottom:-47px;background:var(--lime);color:#111;padding:10px 13px;font-size:9px;text-transform:uppercase;letter-spacing:.12em;transform:rotate(3deg);font-weight:800}.ticker{border-top:1px solid #aaa;border-bottom:1px solid #aaa;padding:15px 0;display:flex;justify-content:space-between;gap:18px;overflow:hidden;white-space:nowrap;font-size:11px;font-weight:800;letter-spacing:.1em}.ticker b{color:var(--orange)}
+  .manifesto{padding:130px 0}.manifesto-grid{display:grid;grid-template-columns:1fr 1fr;gap:80px;margin-top:34px}.manifesto h2,.section-head h2,.workflow h2,.install h2,.escape h2{font-family:"Arial Narrow","Helvetica Neue",sans-serif;text-transform:uppercase;letter-spacing:-.055em;line-height:.92;margin:0}.manifesto h2{font-size:clamp(48px,6vw,86px)}.manifesto h2 span{color:transparent;-webkit-text-stroke:1.5px currentColor}.manifesto-copy{font-family:"Helvetica Neue",sans-serif;font-size:19px;line-height:1.65;color:#41413d}.manifesto-copy p:first-child{margin-top:0}.manifesto-copy strong{color:var(--orange)}
+  .escape-card{position:relative;display:grid;grid-template-columns:130px 1.15fr .85fr;gap:35px;background:#161614;color:#f3f0e6;padding:62px;overflow:hidden}.escape-card:before{content:"";position:absolute;inset:0;background:linear-gradient(125deg,transparent 55%,#ff5b2216),repeating-linear-gradient(90deg,transparent 0 59px,#ffffff08 60px)}.escape-number{position:relative;font-family:serif;font-size:130px;line-height:.7;color:var(--orange)}.escape-copy{position:relative}.escape h2{font-size:clamp(38px,4vw,62px);margin:18px 0 28px}.escape-copy>p:not(.kicker):not(.callout){font-family:"Helvetica Neue",sans-serif;color:#bbb9b2;line-height:1.65}.callout{border-left:3px solid var(--orange);padding-left:18px;margin-top:28px;font-weight:700;line-height:1.5}.token-stack{position:relative;min-height:320px}.token{position:absolute;width:260px;height:145px;border:1px solid #666;padding:20px;display:flex;flex-direction:column;justify-content:space-between;box-shadow:0 18px 35px #0008}.token small,.token span{font-size:9px;letter-spacing:.13em;text-transform:uppercase}.token b{font-size:14px}.token-one{background:#292925;right:30px;top:16px;transform:rotate(8deg)}.token-two{background:var(--orange);color:#111;right:2px;top:135px;transform:rotate(-5deg)}
+  .capabilities{padding:140px 0}.section-head{display:flex;justify-content:space-between;align-items:end;margin-bottom:54px}.section-head h2{font-size:clamp(50px,6vw,82px);margin-top:18px}.section-head>p{font-family:"Helvetica Neue",sans-serif;max-width:390px;line-height:1.6;color:#555}.cap-grid{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid #999;border-left:1px solid #999}.cap-card{min-height:330px;padding:25px;border-right:1px solid #999;border-bottom:1px solid #999;display:flex;flex-direction:column;transition:.2s}.cap-card:hover{background:var(--orange);color:#111;transform:translate(-5px,-5px);box-shadow:5px 5px 0 #111}.cap-top{display:flex;justify-content:space-between;font-size:10px}.cap-top code{background:#111;color:#eee;padding:5px 7px}.cap-card h3{font-family:"Arial Narrow",sans-serif;text-transform:uppercase;font-size:46px;letter-spacing:-.04em;margin:56px 0 15px}.cap-card p{font-family:"Helvetica Neue",sans-serif;line-height:1.55;color:#555;margin:0}.cap-card a{margin-top:auto;font-size:10px;text-transform:uppercase;font-weight:800;color:inherit;text-decoration:none;display:flex;justify-content:space-between}.cap-card:hover p{color:#111}
+  .workflow{display:grid;grid-template-columns:.9fr 1.1fr;gap:90px;align-items:center;padding:50px 0 150px}.workflow h2{font-size:clamp(46px,5vw,76px);margin:20px 0 28px}.workflow-copy>p:last-child{font-family:"Helvetica Neue",sans-serif;line-height:1.65;color:#555}.workflow-copy code{background:#222;color:#fff;padding:2px 6px}.conversation{position:relative;padding:30px}.bubble{position:relative;padding:24px;font-family:"Helvetica Neue",sans-serif;line-height:1.5;border:1px solid #111;max-width:82%}.bubble span{display:block;font:700 9px/1 "IBM Plex Mono",monospace;letter-spacing:.12em;margin-bottom:12px}.bubble.human{background:#fff;margin-left:auto}.bubble.agent{background:#111;color:#fff;margin-top:55px}.bubble.agent code{display:block;color:var(--lime);font:12px/1.5 monospace;overflow-wrap:anywhere}.bubble.agent small{display:block;color:#999;margin-top:15px}.line{position:absolute;width:2px;height:80px;background:var(--orange);left:46%;top:130px;transform:rotate(35deg)}
+  .install{border-top:1px solid #999;padding:95px 0 120px}.install h2{font-size:clamp(50px,6vw,86px);margin:18px 0 46px}.install h2 code{color:var(--orange);font-family:inherit}.install-box{display:flex;background:#141412;color:#eee;padding:22px;align-items:center;justify-content:space-between;gap:20px}.install-box code{font-size:12px;overflow:auto}.copy-button{border:1px solid #666;background:transparent;color:#fff;padding:9px 14px;text-transform:uppercase;font-size:9px;letter-spacing:.1em;cursor:pointer}.copy-button:hover{background:var(--orange);color:#111;border-color:var(--orange)}.install-links{display:flex;justify-content:flex-end;gap:28px;margin-top:20px}.install-links a{font-size:10px;text-transform:uppercase;font-weight:800;color:inherit;text-decoration:none}
+  :global(html.dark) .landing{--ink:#f2efe6;--paper:#11110f}:global(html.dark) .lede,:global(html.dark) .manifesto-copy,:global(html.dark) .section-head>p,:global(html.dark) .cap-card p,:global(html.dark) .workflow-copy>p:last-child{color:#aaa}:global(html.dark) .button.secondary{color:#f2efe6}:global(html.dark) .ticker,:global(html.dark) .cap-grid,:global(html.dark) .cap-card,:global(html.dark) .install{border-color:#444}:global(html.dark) .bubble.human{background:#e9e5da;color:#111}:global(html.dark) .cap-card:hover{box-shadow:5px 5px 0 #eee}
+  @keyframes blink{50%{opacity:0}}@media(max-width:900px){.hero-grid,.manifesto-grid,.workflow{grid-template-columns:1fr}.hero-grid{gap:75px}.terminal-wrap{width:calc(100% - 20px)}.manifesto-grid,.workflow{gap:45px}.escape-card{grid-template-columns:1fr;padding:38px}.escape-number{font-size:80px}.token-stack{min-height:290px}.cap-grid{grid-template-columns:repeat(2,1fr)}.section-head{display:block}.section-head>p{margin-top:25px}.workflow{padding-bottom:100px}}@media(max-width:600px){.wrap{width:min(100% - 24px,1180px)}.hero{padding-top:55px}.hero h1{font-size:61px}.hero-grid{padding-top:40px}.terminal-body{font-size:10px;padding:18px 14px}.terminal-note{right:-10px}.ticker{justify-content:flex-start}.manifesto,.capabilities{padding:95px 0}.manifesto h2,.section-head h2,.workflow h2,.install h2{font-size:48px}.cap-grid{grid-template-columns:1fr}.cap-card{min-height:270px}.escape-card{padding:28px}.token{width:220px}.install-box{align-items:flex-start;flex-direction:column}.install-links{justify-content:flex-start;flex-wrap:wrap}.button{width:100%}}
+</style>
