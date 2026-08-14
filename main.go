@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +44,13 @@ var upsert bool
 var recordValue string
 var deleteAll bool
 var priority uint16
+var prioritySet bool
+var srvWeight uint16
+var srvPort uint16
+var srvWeightSet bool
+var srvPortSet bool
+var dnsJSONOutput bool
+var dnsDryRun bool
 var tokenOwner string
 var tokenScope string
 var tokenResourceID string
@@ -76,13 +84,22 @@ var wranglerCmd string
 var wranglerAccountLabel string
 
 type dnsRecord struct {
-	ID      string `json:"id"`
-	Type    string `json:"type"`
-	Name    string `json:"name"`
-	Content string `json:"content"`
-	TTL     int    `json:"ttl"`
-	Proxied bool   `json:"proxied"`
-	Comment string `json:"comment"`
+	ID       string         `json:"id"`
+	Type     string         `json:"type"`
+	Name     string         `json:"name"`
+	Content  string         `json:"content"`
+	TTL      int            `json:"ttl"`
+	Proxied  bool           `json:"proxied"`
+	Comment  string         `json:"comment"`
+	Priority uint16         `json:"priority"`
+	Data     *dnsRecordData `json:"data,omitempty"`
+}
+
+type dnsRecordData struct {
+	Priority uint16 `json:"priority"`
+	Weight   uint16 `json:"weight"`
+	Port     uint16 `json:"port"`
+	Target   string `json:"target"`
 }
 
 type zone struct {
@@ -278,12 +295,35 @@ func main() {
 	dnsCmd := &cobra.Command{
 		Use:   "dns",
 		Short: "Manage Cloudflare DNS records for the active profile",
+		Long: `Manage Cloudflare DNS records for the active profile.
+
+Choose a command by intent:
+  a/aaaa/cname     Upsert a single-value record.
+  txt/mx/srv       Safely upsert one exact multi-value record.
+  create           Always insert a new record; never overwrite one.
+  get/list         Inspect records; add --json for automation.
+  delete           Remove an exact value or all matching records.
+
+TXT matches by exact content, MX by priority and target, and SRV by priority,
+weight, port, and target. MX, TXT, and SRV are always created DNS-only.
+Add --dry-run to any write helper to print its payload without calling Cloudflare.`,
+		Example: `  cf dns get MX @ --json
+  cf dns mx @ 10 mx1.mailhost.com --dry-run
+  cf dns create TXT @ "verification=value"
+  cf dns srv _sip._tcp 10 5 5060 sip.example.com`,
 	}
 
 	updateCmd := &cobra.Command{
 		Use:   "update [domain] [type] [key] [value] [comment (optional)]",
-		Short: "Update or insert a DNS record for a domain",
-		Args:  cobra.MinimumNArgs(4),
+		Short: "Update a matched record for an explicit domain",
+		Long: `Update a matched DNS record for an explicit domain.
+
+By default this fails when the type-aware match is missing. Add --upsert to
+create it instead. Use "cf dns create" when the intent is always to insert.`,
+		Example: `  cf dns update example.com A @ 203.0.113.10
+  cf dns update example.com TXT @ "verification=value" --upsert --dry-run
+  cf dns update example.com SRV _sip._tcp sip.example.com --priority 10 --weight 5 --port 5060 --upsert`,
+		Args: cobra.RangeArgs(4, 5),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domain := args[0]
 			recordType := args[1]
@@ -297,6 +337,9 @@ func main() {
 			if key == "" || value == "" {
 				return fmt.Errorf("key and value must be provided")
 			}
+			prioritySet = cmd.Flags().Changed("priority")
+			srvWeightSet = cmd.Flags().Changed("weight")
+			srvPortSet = cmd.Flags().Changed("port")
 
 			resolvedToken, err := resolveAPIToken()
 			if err != nil {
@@ -307,16 +350,71 @@ func main() {
 		},
 	}
 	updateCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
-	updateCmd.Flags().BoolVar(&proxied, "proxied", true, "Whether to enable Cloudflare proxying")
+	updateCmd.Flags().BoolVar(&proxied, "proxied", true, "Enable proxying for A, AAAA, or CNAME; other types stay DNS-only")
 	updateCmd.Flags().Int16Var(&ttl, "ttl", 3600, "Time to live for the DNS record in seconds")
 	updateCmd.Flags().BoolVar(&upsert, "upsert", false, "Create the DNS record if it does not exist")
-	updateCmd.Flags().Uint16Var(&priority, "priority", 0, "Priority for MX records")
+	updateCmd.Flags().Uint16Var(&priority, "priority", 0, "Priority for MX or SRV records")
+	updateCmd.Flags().Uint16Var(&srvWeight, "weight", 0, "Weight for SRV records")
+	updateCmd.Flags().Uint16Var(&srvPort, "port", 0, "Port for SRV records")
+	updateCmd.Flags().BoolVar(&dnsDryRun, "dry-run", false, "Print the intended DNS payload without calling Cloudflare")
 	updateCmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
+
+	createCmd := &cobra.Command{
+		Use:   "create [type] [key] [value] [comment (optional)]",
+		Short: "Create a new DNS record without updating an existing record",
+		Long: `Create a new DNS record with a POST request.
+
+This command never searches for or updates an existing record. Use it when
+multiple TXT, MX, or SRV records must share the same name. For everyday MX and
+SRV upserts, the positional "mx" and "srv" helpers are shorter and safer.
+MX, TXT, and SRV records are forced DNS-only.`,
+		Example: "  cf dns create TXT @ \"verification=value\"\n" +
+			"  cf dns create MX @ mx2.mailhost.com --priority 20\n" +
+			"  cf dns create SRV _sip._tcp sip.example.com --priority 10 --weight 5 --port 5060\n" +
+			"  cf dns create TXT @ \"verification=value\" --dry-run",
+		Args: cobra.RangeArgs(3, 4),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedDomain, err := resolveDomain()
+			if err != nil {
+				return err
+			}
+			resolvedToken, err := resolveAPIToken()
+			if err != nil {
+				return err
+			}
+
+			prioritySet = cmd.Flags().Changed("priority")
+			srvWeightSet = cmd.Flags().Changed("weight")
+			srvPortSet = cmd.Flags().Changed("port")
+			comment := ""
+			if len(args) > 3 {
+				comment = args[3]
+			}
+
+			return createDNSRecord(resolvedToken, resolvedDomain, args[0], args[1], args[2], comment)
+		},
+	}
+	createCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
+	createCmd.Flags().BoolVar(&proxied, "proxied", true, "Enable proxying for A, AAAA, or CNAME; other types stay DNS-only")
+	createCmd.Flags().Int16Var(&ttl, "ttl", 3600, "Time to live for the DNS record in seconds")
+	createCmd.Flags().Uint16Var(&priority, "priority", 0, "Priority for MX and SRV records")
+	createCmd.Flags().Uint16Var(&srvWeight, "weight", 0, "Weight for SRV records")
+	createCmd.Flags().Uint16Var(&srvPort, "port", 0, "Port for SRV records")
+	createCmd.Flags().BoolVar(&dnsDryRun, "dry-run", false, "Print the DNS payload without calling Cloudflare")
+	createCmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
 
 	setCmd := &cobra.Command{
 		Use:   "set [type] [key] [value] [comment (optional)]",
-		Short: "Set a DNS record using the default domain for the current profile",
-		Args:  cobra.MinimumNArgs(3),
+		Short: "Type-aware upsert using the profile's default domain",
+		Long: `Type-aware upsert using the profile's default domain.
+
+Single-value types update the first type/name match. TXT matches exact content,
+MX matches priority and target, and SRV matches all structured data fields.
+Use "cf dns create" when a new record must always be inserted.`,
+		Example: `  cf dns set A @ 203.0.113.10
+  cf dns set TXT @ "verification=value" --dry-run
+  cf dns set SRV _sip._tcp sip.example.com --priority 10 --weight 5 --port 5060`,
+		Args: cobra.RangeArgs(3, 4),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolvedDomain, err := resolveDomain()
 			if err != nil {
@@ -331,21 +429,31 @@ func main() {
 			if len(args) > 3 {
 				comment = args[3]
 			}
+			prioritySet = cmd.Flags().Changed("priority")
+			srvWeightSet = cmd.Flags().Changed("weight")
+			srvPortSet = cmd.Flags().Changed("port")
 
 			return updateDNSRecord(resolvedToken, resolvedDomain, args[0], args[1], args[2], comment)
 		},
 	}
 	setCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
-	setCmd.Flags().BoolVar(&proxied, "proxied", true, "Whether to enable Cloudflare proxying")
+	setCmd.Flags().BoolVar(&proxied, "proxied", true, "Enable proxying for A, AAAA, or CNAME; other types stay DNS-only")
 	setCmd.Flags().Int16Var(&ttl, "ttl", 3600, "Time to live for the DNS record in seconds")
 	setCmd.Flags().BoolVar(&upsert, "upsert", true, "Create the DNS record if it does not exist")
-	setCmd.Flags().Uint16Var(&priority, "priority", 0, "Priority for MX records")
+	setCmd.Flags().Uint16Var(&priority, "priority", 0, "Priority for MX or SRV records")
+	setCmd.Flags().Uint16Var(&srvWeight, "weight", 0, "Weight for SRV records")
+	setCmd.Flags().Uint16Var(&srvPort, "port", 0, "Port for SRV records")
+	setCmd.Flags().BoolVar(&dnsDryRun, "dry-run", false, "Print the intended DNS payload without calling Cloudflare")
 	setCmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
 
 	listCmd := &cobra.Command{
 		Use:   "list [type] [key]",
 		Short: "List DNS records for a domain or the current profile domain",
-		Args:  cobra.MaximumNArgs(2),
+		Long:  "List DNS records, optionally filtered by type and exact name. Use --json for structured automation output, including SRV data.",
+		Example: `  cf dns list
+  cf dns list TXT
+  cf dns list SRV _sip._tcp --json`,
+		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolvedDomain, err := resolveDomain()
 			if err != nil {
@@ -369,17 +477,20 @@ func main() {
 			if err != nil {
 				return err
 			}
-			printDNSRecords(records)
-			return nil
+			return printDNSRecords(records, dnsJSONOutput)
 		},
 	}
 	listCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
 	listCmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
+	listCmd.Flags().BoolVar(&dnsJSONOutput, "json", false, "Print records as JSON")
 
 	getCmd := &cobra.Command{
 		Use:   "get [type] [key]",
 		Short: "Get one or more exact-match DNS records for the current profile domain",
-		Args:  cobra.ExactArgs(2),
+		Long:  "Get every record with the exact type and name. Use --json to preserve all fields, including structured SRV data.",
+		Example: `  cf dns get MX @
+  cf dns get SRV _sip._tcp --json`,
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolvedDomain, err := resolveDomain()
 			if err != nil {
@@ -394,17 +505,24 @@ func main() {
 			if err != nil {
 				return err
 			}
-			printDNSRecords(records)
-			return nil
+			return printDNSRecords(records, dnsJSONOutput)
 		},
 	}
 	getCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
 	getCmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
+	getCmd.Flags().BoolVar(&dnsJSONOutput, "json", false, "Print records as JSON")
 
 	deleteCmd := &cobra.Command{
 		Use:   "delete [type] [key]",
 		Short: "Delete DNS records from the current profile domain",
-		Args:  cobra.ExactArgs(2),
+		Long: `Delete DNS records from the profile's default domain.
+
+When a name has multiple values, prefer --value to select one exact content.
+Use --all only when every record with that type and name should be removed.`,
+		Example: `  cf dns delete TXT @ --value "verification=old"
+  cf dns delete MX @ --value mx.old-provider.com
+  cf dns delete TXT obsolete --all`,
+		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolvedDomain, err := resolveDomain()
 			if err != nil {
@@ -434,8 +552,15 @@ func main() {
 	txtCmd := makeRecordShortcutCommand("txt", "TXT", "text", "Shortcut for setting a TXT record on the default domain")
 	mxCmd := &cobra.Command{
 		Use:   "mx [key] [priority] [mail-server] [comment (optional)]",
-		Short: "Shortcut for setting an MX record on the default domain",
-		Args:  cobra.MinimumNArgs(3),
+		Short: "Safely upsert one MX record by priority and mail server",
+		Long: `Safely upsert one DNS-only MX record on the profile's default domain.
+
+Only an MX record with the same priority and mail server is updated. Otherwise
+a new record is inserted, so multiple MX records can coexist at the same name.`,
+		Example: "  cf dns mx @ 10 mx1.mailhost.com\n" +
+			"  cf dns mx @ 20 mx2.mailhost.com\n" +
+			"  cf dns mx @ 10 mx1.mailhost.com --dry-run",
+		Args: cobra.RangeArgs(3, 4),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolvedDomain, err := resolveDomain()
 			if err != nil {
@@ -451,6 +576,7 @@ func main() {
 				return err
 			}
 			priority = parsedPriority
+			prioritySet = true
 
 			comment := ""
 			if len(args) > 3 {
@@ -461,10 +587,63 @@ func main() {
 		},
 	}
 	mxCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
-	mxCmd.Flags().BoolVar(&proxied, "proxied", true, "Whether to enable Cloudflare proxying")
+	mxCmd.Flags().BoolVar(&proxied, "proxied", true, "Ignored for MX records, which are always DNS-only")
 	mxCmd.Flags().Int16Var(&ttl, "ttl", 3600, "Time to live for the DNS record in seconds")
 	mxCmd.Flags().BoolVar(&upsert, "upsert", true, "Create the DNS record if it does not exist")
+	mxCmd.Flags().BoolVar(&dnsDryRun, "dry-run", false, "Print the intended DNS payload without calling Cloudflare")
 	mxCmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
+
+	srvCmd := &cobra.Command{
+		Use:   "srv [key] [priority] [weight] [port] [target] [comment (optional)]",
+		Short: "Safely upsert one structured SRV record",
+		Long: `Safely upsert one structured, DNS-only SRV record.
+
+The key contains service and protocol, for example _sip._tcp. A record is
+updated only when priority, weight, port, and target all match. Otherwise a new
+record is inserted so multiple SRV records can coexist at the same name.`,
+		Example: "  cf dns srv _sip._tcp 10 5 5060 sip.example.com\n" +
+			"  cf dns srv _sip._tcp 20 5 5060 sip-backup.example.com\n" +
+			"  cf dns srv _sip._tcp 10 5 5060 sip.example.com --dry-run",
+		Args: cobra.RangeArgs(5, 6),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedDomain, err := resolveDomain()
+			if err != nil {
+				return err
+			}
+			resolvedToken, err := resolveAPIToken()
+			if err != nil {
+				return err
+			}
+
+			priority, err = parseDNSUint16("SRV priority", args[1])
+			if err != nil {
+				return err
+			}
+			srvWeight, err = parseDNSUint16("SRV weight", args[2])
+			if err != nil {
+				return err
+			}
+			srvPort, err = parseDNSUint16("SRV port", args[3])
+			if err != nil {
+				return err
+			}
+			prioritySet = true
+			srvWeightSet = true
+			srvPortSet = true
+
+			comment := ""
+			if len(args) > 5 {
+				comment = args[5]
+			}
+
+			return updateDNSRecord(resolvedToken, resolvedDomain, "SRV", args[0], args[4], comment)
+		},
+	}
+	srvCmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
+	srvCmd.Flags().Int16Var(&ttl, "ttl", 3600, "Time to live for the DNS record in seconds")
+	srvCmd.Flags().BoolVar(&upsert, "upsert", true, "Create the DNS record if it does not exist")
+	srvCmd.Flags().BoolVar(&dnsDryRun, "dry-run", false, "Print the intended DNS payload without calling Cloudflare")
+	srvCmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
 
 	doctorCmd := &cobra.Command{
 		Use:   "doctor",
@@ -1382,6 +1561,7 @@ Notes
 	r2Cmd.AddCommand(r2CredsCmd)
 	r2Cmd.AddCommand(r2LogpushCmd)
 	dnsCmd.AddCommand(updateCmd)
+	dnsCmd.AddCommand(createCmd)
 	dnsCmd.AddCommand(setCmd)
 	dnsCmd.AddCommand(listCmd)
 	dnsCmd.AddCommand(getCmd)
@@ -1391,6 +1571,7 @@ Notes
 	dnsCmd.AddCommand(cnameCmd)
 	dnsCmd.AddCommand(txtCmd)
 	dnsCmd.AddCommand(mxCmd)
+	dnsCmd.AddCommand(srvCmd)
 	tokensCmd.AddCommand(mintCmd)
 	tokensCmd.AddCommand(mintGenericCmd)
 	tokensCmd.AddCommand(tokensPermissionsCmd)
@@ -1412,16 +1593,23 @@ Notes
 }
 
 func updateDNSRecord(apiToken, domain, recordType, key, value, comment string) error {
-	client := &http.Client{}
-	zoneID, err := fetchZoneID(client, apiToken, domain)
-	if err != nil {
-		return err
-	}
-
 	recordName := normalizeRecordName(domain, key)
 	recordDisplayName := key
 	if recordDisplayName == "" {
 		recordDisplayName = "@"
+	}
+	if dnsDryRun {
+		action := "update"
+		if upsert {
+			action = "upsert"
+		}
+		return printDNSDryRun(action, recordType, recordName, value, comment)
+	}
+
+	client := &http.Client{}
+	zoneID, err := fetchZoneID(client, apiToken, domain)
+	if err != nil {
+		return err
 	}
 
 	recordResp, err := getJSON[[]dnsRecord](client, fmt.Sprintf(
@@ -1434,21 +1622,125 @@ func updateDNSRecord(apiToken, domain, recordType, key, value, comment string) e
 		return err
 	}
 
-	if len(recordResp.Result) == 0 {
+	desired := desiredDNSRecord(recordType, value)
+	record, found := findDNSRecordForUpdate(recordResp.Result, desired)
+	if !found {
 		if !upsert {
+			switch strings.ToUpper(recordType) {
+			case "TXT":
+				return fmt.Errorf("the TXT record was not found for %s with exact content %q", recordName, value)
+			case "MX":
+				return fmt.Errorf("the MX record was not found for %s with priority %d and value %s", recordName, priority, value)
+			case "SRV":
+				return fmt.Errorf("the SRV record was not found for %s with priority %d, weight %d, port %d, and target %s", recordName, priority, srvWeight, srvPort, value)
+			}
 			return fmt.Errorf("the %s record was not found for %s", strings.ToUpper(recordType), recordName)
 		}
 		if err := insertRecord(apiToken, recordType, recordName, value, comment, zoneID, client); err != nil {
 			return err
 		}
 	} else {
-		if err := updateRecord(apiToken, recordType, recordName, value, comment, zoneID, recordResp.Result[0].ID, client); err != nil {
+		if err := updateRecord(apiToken, recordType, recordName, value, comment, zoneID, record.ID, client); err != nil {
 			return err
 		}
 	}
 
-	fmt.Printf("✅ %s %s -> %s\n", strings.ToUpper(recordType), recordDisplayName, value)
+	fmt.Printf("✅ %s %s -> %s\n", strings.ToUpper(recordType), recordDisplayName, formatDNSRecordValue(recordType, value))
 	return nil
+}
+
+func createDNSRecord(apiToken, domain, recordType, key, value, comment string) error {
+	recordName := normalizeRecordName(domain, key)
+	if dnsDryRun {
+		return printDNSDryRun("create", recordType, recordName, value, comment)
+	}
+
+	client := &http.Client{}
+	zoneID, err := fetchZoneID(client, apiToken, domain)
+	if err != nil {
+		return err
+	}
+	if err := insertRecord(apiToken, recordType, recordName, value, comment, zoneID, client); err != nil {
+		return err
+	}
+
+	fmt.Printf("✅ Created %s %s -> %s\n", strings.ToUpper(recordType), key, formatDNSRecordValue(recordType, value))
+	return nil
+}
+
+func formatDNSRecordValue(recordType, value string) string {
+	switch strings.ToUpper(recordType) {
+	case "MX":
+		return fmt.Sprintf("priority=%d target=%s", priority, value)
+	case "SRV":
+		return fmt.Sprintf("priority=%d weight=%d port=%d target=%s", priority, srvWeight, srvPort, value)
+	default:
+		return value
+	}
+}
+
+func desiredDNSRecord(recordType, value string) dnsRecord {
+	record := dnsRecord{
+		Type:     strings.ToUpper(recordType),
+		Content:  value,
+		Priority: priority,
+	}
+	if record.Type == "SRV" {
+		record.Data = &dnsRecordData{
+			Priority: priority,
+			Weight:   srvWeight,
+			Port:     srvPort,
+			Target:   value,
+		}
+	}
+	return record
+}
+
+func findDNSRecordForUpdate(records []dnsRecord, desired dnsRecord) (dnsRecord, bool) {
+	if len(records) == 0 {
+		return dnsRecord{}, false
+	}
+
+	switch strings.ToUpper(desired.Type) {
+	case "TXT":
+		for _, record := range records {
+			if record.Content == desired.Content {
+				return record, true
+			}
+		}
+		return dnsRecord{}, false
+	case "MX":
+		for _, record := range records {
+			if record.Priority == desired.Priority && equalDNSTarget(record.Content, desired.Content) {
+				return record, true
+			}
+		}
+		return dnsRecord{}, false
+	case "SRV":
+		for _, record := range records {
+			if equalSRVData(record.Data, desired.Data) {
+				return record, true
+			}
+		}
+		return dnsRecord{}, false
+	default:
+		return records[0], true
+	}
+}
+
+func equalSRVData(left, right *dnsRecordData) bool {
+	return left != nil && right != nil &&
+		left.Priority == right.Priority &&
+		left.Weight == right.Weight &&
+		left.Port == right.Port &&
+		equalDNSTarget(left.Target, right.Target)
+}
+
+func equalDNSTarget(left, right string) bool {
+	normalize := func(value string) string {
+		return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), ".")
+	}
+	return normalize(left) == normalize(right)
 }
 
 func listDNSRecords(apiToken, domain, recordType, key string) ([]dnsRecord, error) {
@@ -1607,19 +1899,54 @@ func makeRecordPayload(recordType, recordName, value, comment string) (map[strin
 	payload := map[string]any{
 		"type":    upperType,
 		"name":    recordName,
-		"content": value,
 		"ttl":     ttl,
-		"proxied": proxied,
+		"proxied": proxied && supportsProxy(upperType),
 		"comment": comment,
 	}
-	if upperType == "MX" {
-		if priority == 0 {
+	switch upperType {
+	case "MX":
+		if !prioritySet {
 			return nil, errors.New("MX records require --priority or the DNS command syntax: cf dns mx <key> <priority> <mail-server>")
 		}
+		payload["content"] = value
 		payload["priority"] = priority
+	case "SRV":
+		if !prioritySet || !srvWeightSet || !srvPortSet {
+			return nil, errors.New("SRV records require priority, weight, port, and target; use: cf dns srv <key> <priority> <weight> <port> <target>")
+		}
+		payload["data"] = dnsRecordData{
+			Priority: priority,
+			Weight:   srvWeight,
+			Port:     srvPort,
+			Target:   value,
+		}
+	default:
+		payload["content"] = value
 	}
 
 	return payload, nil
+}
+
+func supportsProxy(recordType string) bool {
+	switch strings.ToUpper(recordType) {
+	case "A", "AAAA", "CNAME":
+		return true
+	default:
+		return false
+	}
+}
+
+func printDNSDryRun(action, recordType, recordName, value, comment string) error {
+	payload, err := makeRecordPayload(recordType, recordName, value, comment)
+	if err != nil {
+		return err
+	}
+	encoded, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Printf("DRY RUN %s\n%s\n", strings.ToUpper(action), encoded)
+	return nil
 }
 
 func newJSONRequest(method, requestURL, token string, payload any) (*http.Request, error) {
@@ -3395,10 +3722,18 @@ func printPermissionGroups(groups []permissionGroup, filter string) {
 	}
 }
 
-func printDNSRecords(records []dnsRecord) {
+func printDNSRecords(records []dnsRecord, asJSON bool) error {
+	if asJSON {
+		encoded, err := json.MarshalIndent(records, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(encoded))
+		return nil
+	}
 	if len(records) == 0 {
 		fmt.Println("No records found.")
-		return
+		return nil
 	}
 
 	for _, record := range records {
@@ -3406,15 +3741,24 @@ func printDNSRecords(records []dnsRecord) {
 		if comment == "" {
 			comment = "-"
 		}
+		details := record.Content
+		if record.Data != nil {
+			data, err := json.Marshal(record.Data)
+			if err != nil {
+				return err
+			}
+			details = string(data)
+		}
 		fmt.Printf("%s\t%s\t%s\tttl=%d\tproxied=%t\tcomment=%s\n",
 			record.Type,
 			record.Name,
-			record.Content,
+			details,
 			record.TTL,
 			record.Proxied,
 			comment,
 		)
 	}
+	return nil
 }
 
 func printWorkers(workers []workerScript, filter string) {
@@ -3569,7 +3913,7 @@ func makeRecordShortcutCommand(name, recordType, valueLabel, short string) *cobr
 	cmd := &cobra.Command{
 		Use:   fmt.Sprintf("%s [key] [%s] [comment (optional)]", name, valueLabel),
 		Short: short,
-		Args:  cobra.MinimumNArgs(2),
+		Args:  cobra.RangeArgs(2, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolvedDomain, err := resolveDomain()
 			if err != nil {
@@ -3588,22 +3932,42 @@ func makeRecordShortcutCommand(name, recordType, valueLabel, short string) *cobr
 			return updateDNSRecord(resolvedToken, resolvedDomain, recordType, args[0], args[1], comment)
 		},
 	}
+	switch recordType {
+	case "TXT":
+		cmd.Short = "Safely upsert one TXT record by exact content"
+		cmd.Long = `Safely upsert one DNS-only TXT record by exact content.
+
+An identical TXT value is updated. A different value is inserted alongside
+existing TXT records at the same name. Use "cf dns create TXT" to always POST.`
+		cmd.Example = `  cf dns txt @ "v=spf1 include:example.net ~all"
+  cf dns txt _dmarc "v=DMARC1; p=none" --dry-run`
+	case "A":
+		cmd.Example = "  cf dns a @ 203.0.113.10\n  cf dns a app 203.0.113.20 --proxied=false --dry-run"
+	case "AAAA":
+		cmd.Example = "  cf dns aaaa @ 2001:db8::10"
+	case "CNAME":
+		cmd.Example = "  cf dns cname www app.example.net\n  cf dns cname docs cname.vercel-dns.com --proxied=false"
+	}
 
 	cmd.Flags().StringVar(&apiToken, "api-token", "", "Cloudflare API token")
-	cmd.Flags().BoolVar(&proxied, "proxied", true, "Whether to enable Cloudflare proxying")
+	cmd.Flags().BoolVar(&proxied, "proxied", true, "Enable proxying for A, AAAA, or CNAME; other types stay DNS-only")
 	cmd.Flags().Int16Var(&ttl, "ttl", 3600, "Time to live for the DNS record in seconds")
 	cmd.Flags().BoolVar(&upsert, "upsert", true, "Create the DNS record if it does not exist")
-	cmd.Flags().Uint16Var(&priority, "priority", 0, "Priority for MX records")
+	cmd.Flags().BoolVar(&dnsDryRun, "dry-run", false, "Print the intended DNS payload without calling Cloudflare")
 	cmd.Flags().StringVar(&domain, "domain", "", "Default domain override")
 	return cmd
 }
 
 func parsePriority(value string) (uint16, error) {
-	var parsed uint16
-	if _, err := fmt.Sscanf(value, "%d", &parsed); err != nil {
-		return 0, fmt.Errorf("invalid MX priority %q", value)
+	return parseDNSUint16("MX priority", value)
+}
+
+func parseDNSUint16(label, value string) (uint16, error) {
+	parsed, err := strconv.ParseUint(value, 10, 16)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q", label, value)
 	}
-	return parsed, nil
+	return uint16(parsed), nil
 }
 
 func slugify(value string) string {

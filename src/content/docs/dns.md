@@ -3,7 +3,7 @@ title: DNS records
 description: Use the DNS command group to read, create, update, and delete common Cloudflare DNS records from the terminal.
 order: 3
 category: Cloudflare Operations
-summary: Command shapes and examples for A, AAAA, CNAME, TXT, MX, list, get, update, and delete workflows.
+summary: Command shapes and examples for safe create, upsert, JSON, dry-run, and A, AAAA, CNAME, TXT, MX, and SRV workflows.
 ---
 
 ## Command shape
@@ -28,9 +28,31 @@ cf dns aaaa @ 2001:db8::10
 cf dns cname www app.example.net
 cf dns txt verify abc123
 cf dns mx @ 10 mx1.mailhost.com
+cf dns mx @ 20 mx2.mailhost.com
+cf dns srv _sip._tcp 10 5 5060 sip.example.com
 ```
 
 The optional final argument is a Cloudflare record comment where supported.
+MX helpers match existing records by both priority and mail server. This lets
+multiple MX records share the same key without one helper call overwriting
+another. Repeating an identical helper call updates that exact MX record.
+
+TXT helpers match exact content. SRV helpers use Cloudflare's structured
+`priority`, `weight`, `port`, and `target` fields and match all four fields.
+TXT, MX, and SRV records are always sent as DNS-only records.
+
+## Create without overwriting
+
+Use `create` when the intent is always to insert a new record. It sends a POST
+without searching for an existing type/name pair:
+
+```bash
+cf dns create TXT @ "verification=value"
+cf dns create MX @ mx2.mailhost.com --priority 20
+cf dns create SRV _sip._tcp sip.example.com --priority 10 --weight 5 --port 5060
+```
+
+Use the shorter `txt`, `mx`, and `srv` helpers for safe, repeatable upserts.
 
 ## Read before and after writes
 
@@ -48,6 +70,21 @@ For broad inspection:
 cf dns list
 cf dns list TXT
 cf dns list CNAME www
+cf dns get SRV _sip._tcp --json
+```
+
+`--json` preserves structured SRV data and is the recommended output for
+agents and scripts.
+
+## Preview writes
+
+Add `--dry-run` to a write helper to print the exact payload without calling
+Cloudflare:
+
+```bash
+cf dns mx @ 10 mx1.mailhost.com --dry-run
+cf dns srv _sip._tcp 10 5 5060 sip.example.com --dry-run
+cf dns create TXT @ "verification=value" --dry-run
 ```
 
 ## Delete carefully

@@ -18,16 +18,22 @@ cf profiles list
 
 ```bash
 cf dns update [domain] [type] [key] [value] [comment]
+cf dns create [type] [key] [value] [comment]
 cf dns set [type] [key] [value] [comment]
 cf dns a [key] [ipv4] [comment]
 cf dns aaaa [key] [ipv6] [comment]
 cf dns cname [key] [target] [comment]
 cf dns txt [key] [text] [comment]
 cf dns mx [key] [priority] [mail-server] [comment]
+cf dns srv [key] [priority] [weight] [port] [target] [comment]
 cf dns list [type] [key]
 cf dns get [type] [key]
 cf dns delete [type] [key] [--value value] [--all]
 ```
+
+Use `create` to always insert. Use `txt`, `mx`, and `srv` for type-aware
+upserts. Add `--dry-run` to preview a write or `--json` to `list`/`get` for
+structured output.
 
 ## Tokens
 

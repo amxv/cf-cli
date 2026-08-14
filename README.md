@@ -71,12 +71,14 @@ The CLI is organized by top-level product area. DNS commands always use the `cf 
 
 ```bash
 cf dns update [domain] [type] [key] [value] [comment (optional)]
+cf dns create [type] [key] [value] [comment]
 cf dns set [type] [key] [value] [comment]
 cf dns a [key] [ipv4] [comment]
 cf dns aaaa [key] [ipv6] [comment]
 cf dns cname [key] [target] [comment]
 cf dns txt [key] [text] [comment]
 cf dns mx [key] [priority] [mail-server] [comment]
+cf dns srv [key] [priority] [weight] [port] [target] [comment]
 cf dns list [type] [key]
 cf dns get [type] [key]
 cf dns delete [type] [key] [--value value] [--all]
@@ -128,9 +130,25 @@ cf dns aaaa @ 2001:db8::10
 cf dns set CNAME www app.example.net
 cf dns txt verify abc123
 cf dns mx @ 10 mx1.mailhost.com
+cf dns mx @ 20 mx2.mailhost.com
+cf dns srv _sip._tcp 10 5 5060 sip.example.com
+cf dns create TXT @ "verification=value"
 cf dns list TXT
-cf dns get CNAME www
+cf dns get SRV _sip._tcp --json
 cf dns delete TXT verify --value abc123
+```
+
+MX helpers match by priority and mail server, so multiple MX records can share
+the same key. Repeating an identical command updates that exact record.
+TXT helpers match exact content, while SRV helpers match structured priority,
+weight, port, and target data. `cf dns create` always inserts without searching
+for a match. TXT, MX, and SRV records are always DNS-only.
+
+Preview any DNS write helper without calling Cloudflare:
+
+```bash
+cf dns mx @ 10 mx1.mailhost.com --dry-run
+cf dns create TXT @ "verification=value" --dry-run
 ```
 
 ## Common Non-DNS Tasks
@@ -160,7 +178,11 @@ cf --profile personal doctor
 | `--proxied`  | true    | Whether the record should be proxied         |
 | `--ttl`      | 3600    | Time To Live for the DNS record (in seconds) |
 | `--upsert`   | false   | Create the record if it doesn't exist        |
-| `--priority` | `0`     | Priority for MX records                      |
+| `--priority` | `0`     | Priority for MX or SRV records               |
+| `--weight`   | `0`     | Weight for SRV records                       |
+| `--port`     | `0`     | Port for SRV records                         |
+| `--dry-run` | false | Print a DNS write payload without calling Cloudflare |
+| `--json` | false | Print DNS list/get output as structured JSON       |
 
 ---
 
