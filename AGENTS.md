@@ -12,3 +12,7 @@ When cutting a release, update `src/content/docs/changelog.md` before tagging.
 - Do not include docs-site-only changes such as site styling, Zuedocs/package bumps, deploy plumbing, footer/layout changes, or documentation navigation changes.
 - Rewrite commit subjects into clear release notes instead of pasting raw commit messages.
 - If a release contains only tagging/release metadata, write: `Maintenance release. No direct code behavior changes beyond release preparation.`
+
+### Docs deployment
+
+The Docs GitHub Actions workflow deploys production only for the watched site paths; Vercel Git auto-deployments and `ignoreCommand` stay disabled. Keep the project-scoped `VERCEL_TOKEN` Actions secret and ID variables configured. Check Astro locally; builds run in CI.
