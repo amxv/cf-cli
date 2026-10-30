@@ -40,7 +40,7 @@ cd cf-cli
 Build locally:
 
 ```bash
-go build -o cf .
+go build -o cf ./cmd/cf
 ./cf --help
 ```
 

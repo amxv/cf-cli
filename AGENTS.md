@@ -2,7 +2,7 @@
 
 ## Changelog Guidelines
 
-When cutting a release, update `src/content/docs/changelog.md` before tagging.
+When cutting a release, update `docs/src/content/docs/changelog.md` before tagging.
 
 - Add a new section for the exact version tag being released.
 - Keep the newest version at the top.

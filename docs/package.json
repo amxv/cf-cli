@@ -8,7 +8,8 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "check": "astro check"
+    "check": "astro check",
+    "test": "node --test scripts/deployment.test.mjs scripts/prepare-prebuilt.test.mjs"
   },
   "devDependencies": {
     "@astrojs/check": "^0.9.4",

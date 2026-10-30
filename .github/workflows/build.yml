@@ -32,7 +32,7 @@ jobs:
           if [ "${{ matrix.goos }}" = "windows" ]; then
             BINARY="${BINARY}.exe"
           fi
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o dist/$BINARY main.go
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o dist/$BINARY ./cmd/cf
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v3

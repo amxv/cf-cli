@@ -27,6 +27,7 @@
 This repository now includes an Astro documentation site based on the zuedocs template. Run it locally with:
 
 ```bash
+cd docs
 bun install
 bun run dev
 ```
@@ -38,7 +39,7 @@ bun run check
 bun run build
 ```
 
-The docs content lives in `src/content/docs`, with site-wide navigation and metadata in `src/data/docs.ts`.
+The docs content lives in `docs/src/content/docs`, with site-wide navigation and metadata in `docs/src/data/docs.ts`.
 
 ## Quick Start
 

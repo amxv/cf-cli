@@ -8,10 +8,10 @@ import { preparePrebuilt } from './prepare-prebuilt.mjs';
 test('prebuilt output contains Astro files, route mapping, and no raw source tree', (t) => {
   const root = mkdtempSync(path.join(tmpdir(), 'docs-prebuilt-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  mkdirSync(path.join(root, 'dist', 'docs', 'quickstart'), { recursive: true });
-  writeFileSync(path.join(root, 'dist', 'index.html'), '<html>Home</html>');
-  writeFileSync(path.join(root, 'dist', 'docs', 'quickstart', 'index.html'), 'Quickstart');
-  preparePrebuilt(root);
+  mkdirSync(path.join(root, 'docs', 'dist', 'docs', 'quickstart'), { recursive: true });
+  writeFileSync(path.join(root, 'docs', 'dist', 'index.html'), '<html>Home</html>');
+  writeFileSync(path.join(root, 'docs', 'dist', 'docs', 'quickstart', 'index.html'), 'Quickstart');
+  preparePrebuilt(path.join(root, 'docs'));
   assert.equal(readFileSync(path.join(root, '.vercel/output/static/index.html'), 'utf8'), '<html>Home</html>');
   assert.equal(readFileSync(path.join(root, '.vercel/output/static/docs/quickstart/index.html'), 'utf8'), 'Quickstart');
   const config = JSON.parse(readFileSync(path.join(root, '.vercel/output/config.json'), 'utf8'));
@@ -24,5 +24,5 @@ test('prebuilt output contains Astro files, route mapping, and no raw source tre
 test('prebuilt output fails closed if the Astro build is missing', (t) => {
   const root = mkdtempSync(path.join(tmpdir(), 'docs-prebuilt-empty-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  assert.throws(() => preparePrebuilt(root), /Astro dist\/index.html is missing/);
+  assert.throws(() => preparePrebuilt(path.join(root, 'docs')), /Astro dist\/index.html is missing/);
 });
