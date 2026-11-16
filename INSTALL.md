@@ -5,7 +5,7 @@
 Install the latest GitHub release to `~/.local/bin`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/amxv/cf-cli/main/install.sh | bash
+curl -fsSL https://cf.ashray.xyz/install.sh | bash
 cf --help
 ```
 
@@ -14,7 +14,7 @@ cf --help
 Install to a different directory:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/amxv/cf-cli/main/install.sh | CF_INSTALL_DIR="$HOME/bin" bash
+curl -fsSL https://cf.ashray.xyz/install.sh | CF_INSTALL_DIR="$HOME/bin" bash
 ```
 
 You can also pass the target directory as the first argument if you download the script first.
@@ -22,7 +22,7 @@ You can also pass the target directory as the first argument if you download the
 ## Inspect The Script First
 
 ```bash
-curl -fsSL -o install.sh https://raw.githubusercontent.com/amxv/cf-cli/main/install.sh
+curl -fsSL -o install.sh https://cf.ashray.xyz/install.sh
 chmod +x install.sh
 ./install.sh
 cf --help
@@ -46,6 +46,7 @@ go build -o cf ./cmd/cf
 
 ## Installer Behavior
 
+- The canonical installer is served from `https://cf.ashray.xyz/install.sh` by the documentation site. The repository-root `install.sh` remains available for existing GitHub-based install commands and must stay identical to `docs/public/install.sh`.
 - `install.sh` installs the latest published GitHub release by default
 - default install directory: `~/.local/bin`
 - override install directory with `CF_INSTALL_DIR`

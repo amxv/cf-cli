@@ -11,7 +11,7 @@ summary: The fastest path from install to a working profile and first Cloudflare
 Install the latest GitHub release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/amxv/cf-cli/main/install.sh | bash
+curl -fsSL https://cf.ashray.xyz/install.sh | bash
 cf --help
 ```
 

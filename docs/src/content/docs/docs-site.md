@@ -28,9 +28,10 @@ src/pages/docs/index.astro    # docs index
 src/pages/docs/[...slug].astro # article route
 src/content/docs/*.md         # documentation pages
 src/styles/global.css         # visual system
+public/install.sh             # website-hosted CLI installer (mirrors repo root)
 ```
 
-For most updates, edit markdown in `src/content/docs` first.
+For most updates, edit markdown in `src/content/docs` first. Keep `public/install.sh` byte-for-byte identical to the root `install.sh`; the docs test suite enforces this so existing GitHub installer links continue to work.
 
 ## Validate changes
 

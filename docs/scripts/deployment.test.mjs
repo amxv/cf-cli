@@ -15,7 +15,7 @@ test('filtered GitHub pushes trigger deployment only for actual site inputs', ()
     assert.ok(block, 'missing event: ' + event);
     assert.match(block, /branches: \[main\]/);
     const found = [...block.matchAll(/^      - "([^"]+)"$/gm)].map(m => m[1]);
-    assert.deepEqual(found, ["docs/**", "vercel.json", ".github/workflows/docs-deploy.yml"]);
+    assert.deepEqual(found, ["install.sh", "docs/**", "vercel.json", ".github/workflows/docs-deploy.yml"]);
   }
   assert.match(workflow, /secrets\.VERCEL_TOKEN/);
   assert.match(workflow, /vars\.VERCEL_ORG_ID/);
@@ -30,4 +30,21 @@ test('only Actions creates Vercel deployments', () => {
   const config = JSON.parse(readFileSync(path.join(repo, 'vercel.json'), 'utf8'));
   assert.equal(config.git.deploymentEnabled, false);
   assert.equal(Object.hasOwn(config, 'ignoreCommand'), false);
+});
+
+test('website publishes the same installer as the legacy GitHub URL', () => {
+  const legacy = readFileSync(path.join(repo, 'install.sh'), 'utf8');
+  const hosted = readFileSync(path.join(site, 'public/install.sh'), 'utf8');
+  assert.equal(hosted, legacy);
+
+  for (const file of [
+    path.join(repo, 'README.md'),
+    path.join(repo, 'INSTALL.md'),
+    path.join(site, 'src/content/docs/quickstart.md'),
+    path.join(site, 'src/pages/index.astro')
+  ]) {
+    const content = readFileSync(file, 'utf8');
+    assert.match(content, /https:\/\/cf\.ashray\.xyz\/install\.sh/);
+    assert.doesNotMatch(content, /raw\.githubusercontent\.com\/amxv\/cf-cli\/main\/install\.sh/);
+  }
 });

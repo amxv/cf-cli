@@ -11,9 +11,11 @@ test('prebuilt output contains Astro files, route mapping, and no raw source tre
   mkdirSync(path.join(root, 'docs', 'dist', 'docs', 'quickstart'), { recursive: true });
   writeFileSync(path.join(root, 'docs', 'dist', 'index.html'), '<html>Home</html>');
   writeFileSync(path.join(root, 'docs', 'dist', 'docs', 'quickstart', 'index.html'), 'Quickstart');
+  writeFileSync(path.join(root, 'docs', 'dist', 'install.sh'), '#!/usr/bin/env bash\necho installed\n');
   preparePrebuilt(path.join(root, 'docs'));
   assert.equal(readFileSync(path.join(root, '.vercel/output/static/index.html'), 'utf8'), '<html>Home</html>');
   assert.equal(readFileSync(path.join(root, '.vercel/output/static/docs/quickstart/index.html'), 'utf8'), 'Quickstart');
+  assert.equal(readFileSync(path.join(root, '.vercel/output/static/install.sh'), 'utf8'), '#!/usr/bin/env bash\necho installed\n');
   const config = JSON.parse(readFileSync(path.join(root, '.vercel/output/config.json'), 'utf8'));
   assert.equal(config.version, 3);
   assert.deepEqual(config.routes[0], { handle: 'filesystem' });

@@ -46,7 +46,7 @@ The docs content lives in `docs/src/content/docs`, with site-wide navigation and
 Install the latest GitHub release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/amxv/cf-cli/main/install.sh | bash
+curl -fsSL https://cf.ashray.xyz/install.sh | bash
 cf --help
 ```
 
